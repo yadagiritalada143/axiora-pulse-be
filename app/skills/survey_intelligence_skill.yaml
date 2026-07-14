@@ -1,0 +1,35 @@
+name: survey_intelligence_skill
+version: "1.0"
+purpose: >
+  Create targeted validation surveys and interpret response trends.
+used_by: survey_intelligence_agent
+
+inputs:
+  required:
+    - idea_title
+    - idea_description
+  optional:
+    - target_customer
+    - validation_goal
+
+output_schema:
+  survey_title:
+    type: string
+  survey_objective:
+    type: string
+  questions:
+    type: array
+  confidence:
+    type: float
+    range: [0.0, 1.0]
+
+guardrails:
+  - Keep surveys short, sweet, and engaging (5 to 8 questions max).
+  - Avoid biased or leading questions.
+  - Do not ask for highly sensitive personal data unless strictly necessary.
+
+prompt_template: |
+  Generate survey questions for: {idea_title}.
+  Return JSON containing survey_title, survey_objective, questions, confidence.
+  Ensure you follow these guardrails:
+  {guardrail_reminder}

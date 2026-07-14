@@ -1,0 +1,78 @@
+from abc import ABC, abstractmethod
+from typing import Optional
+from pydantic import BaseModel
+
+
+# ── Request / Response envelopes ───────────────────────────────────────────────
+
+class LLMRequest(BaseModel):
+    system_prompt: str = ""
+    user_prompt: str
+    model: str = ""                 # if empty, provider uses its default
+    temperature: float = 0.3
+    max_tokens: int = 2048
+    # NOTE: response_format="json" is only supported by some providers (OpenAI).
+    # For HuggingFace / Llama we rely on prompt engineering instead.
+    response_format: str = "text"   # text | json
+
+
+class LLMResponse(BaseModel):
+    content: str
+    model: str
+    provider: str
+    tokens_input: int = 0
+    tokens_output: int = 0
+    total_tokens: int = 0
+    success: bool = True
+    error: Optional[str] = None
+
+
+# ── Abstract gateway ───────────────────────────────────────────────────────────
+
+class LLMGateway(ABC):
+    """
+    Abstract base class for all LLM providers.
+    All agents call LLMGateway.complete() — never the provider SDK directly.
+    """
+
+    @abstractmethod
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Send a prompt and return a structured response."""
+
+    @abstractmethod
+    def get_provider_name(self) -> str:
+        """Return provider name string, e.g. 'huggingface'."""
+
+    @abstractmethod
+    def get_default_model(self) -> str:
+        """Return the default model for this provider."""
+
+
+# ── Factory ────────────────────────────────────────────────────────────────────
+
+def get_llm_gateway(provider: Optional[str] = None) -> LLMGateway:
+    """
+    Return the appropriate LLM gateway instance.
+    Defaults to settings.default_provider.
+    """
+    from app.core.config import settings
+
+    provider = provider or settings.default_provider
+
+    if provider == "huggingface":
+        from app.llm.providers.huggingface_provider import HuggingFaceProvider
+        return HuggingFaceProvider()
+    elif provider == "openai":
+        from app.llm.providers.openai_provider import OpenAIProvider
+        return OpenAIProvider()
+    elif provider == "anthropic":
+        from app.llm.providers.anthropic_provider import AnthropicProvider
+        return AnthropicProvider()
+    elif provider == "azure_openai":
+        from app.llm.providers.azure_openai_provider import AzureOpenAIProvider
+        return AzureOpenAIProvider()
+    else:
+        raise ValueError(
+            f"Unsupported LLM provider: '{provider}'. "
+            "Choose from: huggingface, openai, anthropic, azure_openai"
+        )
