@@ -24,6 +24,8 @@ class OpenAIProvider(LLMGateway):
             max_retries=settings.openai_max_retries,
         )
         self._default_model = settings.default_model or "gpt-4o-mini"
+        if "/" in self._default_model or "llama" in self._default_model.lower():
+            self._default_model = "gpt-4o-mini"
 
     def get_provider_name(self) -> str:
         return "openai"

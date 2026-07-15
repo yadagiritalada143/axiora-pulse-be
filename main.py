@@ -14,9 +14,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.limiter import limiter
+from app.db.database import run_migrations
 from app.skills.skill_registry import skill_registry
 
 # ── Logging must be configured before any other imports ───────────────────────
@@ -33,6 +37,12 @@ async def lifespan(app: FastAPI):
     logger.info(f"  {settings.app_name}  v{settings.app_version}")
     logger.info("=" * 60)
 
+    # Validate security config (JWT Secret validation)
+    _validate_security_config()
+
+    # Apply any pending DB migrations (Alembic upgrade head)
+    await run_migrations()
+
     # Load all skill YAML files into the registry
     skill_registry.load_all()
     loaded = skill_registry.list_skills()
@@ -42,7 +52,8 @@ async def lifespan(app: FastAPI):
     _validate_provider_config()
 
     logger.info("Server is ready.")
-    logger.info(f"  Docs  →  http://localhost:8000/docs")
+    if settings.debug:
+        logger.info(f"  Docs  →  http://localhost:8000/docs")
     logger.info(f"  Health →  http://localhost:8000/health")
     logger.info("=" * 60)
 
@@ -67,13 +78,23 @@ def _validate_provider_config() -> None:
         logger.info(f"LLM provider: {provider} | model: {settings.default_model}")
 
 
+def _validate_security_config() -> None:
+    """Validate JWT secret is customized if not in debug mode."""
+    if settings.jwt_secret_key == "axiora-pulse-change-this-secret-in-production" and not settings.debug:
+        logger.critical("CRITICAL SECURITY ERROR: JWT_SECRET_KEY is using the insecure default value in production mode!")
+        raise ValueError(
+            "CRITICAL SECURITY ERROR: JWT_SECRET_KEY is using the insecure default value in production mode! "
+            "Please configure JWT_SECRET_KEY in your .env file."
+        )
+
+
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
 # Tags listed in alphabetical order — FastAPI preserves this order in Swagger UI.
 _OPENAPI_TAGS = [
     {
         "name": "AI Mentor",
-        "description": "Founder-facing AI Mentor: chat, session inspection, and session reset.",
+        "description": "Founder-facing AI Mentor: chat.",
     },
     {
         "name": "Auth",
@@ -102,16 +123,28 @@ app = FastAPI(
         "MCP, Skills, and Agentic Workflows."
     ),
     openapi_tags=_OPENAPI_TAGS,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
     lifespan=lifespan,
 )
 
+# ── Rate Limiter ──────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── CORS ───────────────────────────────────────────────────────────────────────
+# Parse allowed origins from settings
+origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+if settings.debug and (not origins or "*" in origins):
+    origins = ["*"]
+    allow_credentials = False
+else:
+    allow_credentials = "*" not in origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # Tighten this in production
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -2,7 +2,7 @@
 AI Mentor API Routes  —  /api/v1/mentor
 ──────────────────────────────────────────────────────────────────────────────
 Handles conversation with the founder-facing AI Mentor.
-Exposes endpoints to chat, inspect the session workspace state, and reset sessions.
+Exposes an endpoint to chat.
 
 Health checks are handled globally at GET /health (see main.py).
 """
@@ -79,54 +79,3 @@ async def mentor_chat(request: MentorChatRequest) -> MentorChatResponse:
         validation_result=updated_session.validation_result
     )
 
-
-@router.get(
-    "/session/{session_id}",
-    response_model=MentorChatResponse,
-    summary="Get active session details",
-    description="Returns the current state, extracted idea parameters, and history.",
-)
-async def get_session(session_id: str) -> MentorChatResponse:
-    session = mentor_store.get_or_create(session_id)
-    
-    assistant_reply = "Hi! I am your AI Mentor. Let's talk about your business idea!"
-    if session.conversation_history:
-        for msg in reversed(session.conversation_history):
-            if msg.get("role") == "assistant":
-                assistant_reply = msg.get("content", "")
-                break
-    else:
-        # If history is empty, populate an initial greeting
-        session.conversation_history.append({"role": "assistant", "content": assistant_reply})
-
-    return MentorChatResponse(
-        reply=assistant_reply,
-        session_id=session.session_id,
-        workspace_id=session.workspace_id,
-        state=session.state,
-        idea=session.idea,
-        validation_result=session.validation_result
-    )
-
-
-@router.post(
-    "/reset/{session_id}",
-    response_model=MentorChatResponse,
-    summary="Reset mentoring session",
-    description="Clears all conversation history, extracted idea details, and validation scores for this session.",
-)
-async def reset_session(session_id: str) -> MentorChatResponse:
-    logger.info(f"[Mentor API] Resetting session: {session_id}")
-    session = mentor_store.reset(session_id)
-    
-    greeting = "Hello! I'm your AI Mentor & Co-Founder. Let's start fresh. Tell me about your startup idea!"
-    session.conversation_history.append({"role": "assistant", "content": greeting})
-    
-    return MentorChatResponse(
-        reply=greeting,
-        session_id=session.session_id,
-        workspace_id=session.workspace_id,
-        state=session.state,
-        idea=session.idea,
-        validation_result=None
-    )

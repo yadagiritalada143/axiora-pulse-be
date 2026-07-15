@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "Axiora Pulse AI Engine"
     app_version: str = "1.0.0"
     debug: bool = False
+    allowed_origins: str = "http://localhost:3000,http://localhost:5173"
 
     # ── LLM Provider ─────────────────────────────────────────────────────────
     default_provider: Literal["huggingface", "openai", "anthropic", "azure_openai"] = "huggingface"
@@ -43,15 +44,29 @@ class Settings(BaseSettings):
     # Phase 1: only idea_validation_agent is active (weight = 1.0)
     # These will be normalized to 1.0 total when all agents are added.
     idea_clarity_weight: float = 0.20
-    market_opportunity_weight: float = 0.20
+    market_opportunity_weight: float = 0.25
     survey_signal_weight: float = 0.25
     gtm_readiness_weight: float = 0.15
-    financial_readiness_weight: float = 0.20
+    financial_readiness_weight: float = 0.15
 
     # ── Auth / JWT ────────────────────────────────────────────────────────────
     jwt_secret_key: str = "axiora-pulse-change-this-secret-in-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+
+    # ── OTP ───────────────────────────────────────────────────────────────────
+    otp_expire_minutes: int = 10
+
+    # ── Database ──────────────────────────────────────────────────────────────
+    database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/axiora_local_db"
+
+    # ── SMTP / Email ──────────────────────────────────────────────────────────
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Axiora Pulse"
 
 
 settings = Settings()

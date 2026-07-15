@@ -117,7 +117,14 @@ class MentorService:
     """Manages the dialogue state and LLM extraction/generation loop."""
 
     def __init__(self):
-        self.llm = get_llm_gateway()
+        self._llm = None  # Lazy-initialized on first use to avoid startup crashes
+
+    @property
+    def llm(self):
+        """Lazily resolve the LLM gateway on first access."""
+        if self._llm is None:
+            self._llm = get_llm_gateway()
+        return self._llm
 
     async def process_message(self, session: MentorSession, user_message: str) -> MentorSession:
         # Add user message to history
