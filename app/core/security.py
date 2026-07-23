@@ -1,27 +1,38 @@
 """
 app/core/security.py
 ────────────────────────────────────────────────────────────────────────────────
-Security utilities: password hashing (PBKDF2-HMAC-SHA256) and JWT token creation.
+Security utilities: password hashing (PBKDF2-HMAC-SHA256), JWT token creation,
+and OTP generation.
 
 Password hashing is a one-way operation — it is impossible to decrypt a hashed
 password back to its original value. Verification is done by hashing the
 candidate and comparing the results using a timing-safe comparison.
 """
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
 from jose import jwt
 
-from app.core.config import settings
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# ── Environment variable helpers ───────────────────────────────────────────────
+_JWT_SECRET_KEY     = os.getenv("JWT_SECRET_KEY", "axiora-pulse-change-this-secret-in-production")
+_JWT_ALGORITHM      = os.getenv("JWT_ALGORITHM", "HS256")
+_ACCESS_TOKEN_MINS  = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+_OTP_EXPIRE_MINS    = int(os.getenv("OTP_EXPIRE_MINUTES", "10"))
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 _HASH_ITERATIONS = 260_000  # OWASP recommended iteration count for PBKDF2-SHA256
 _SEPARATOR = ":"
+_OTP_DIGITS = 6
 
 
 # ── Password Hashing ───────────────────────────────────────────────────────────
@@ -59,6 +70,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+# ── OTP Generation ─────────────────────────────────────────────────────────────
+
+def generate_otp() -> int:
+    """Generate a cryptographically-random 6-digit OTP (100000–999999)."""
+    return secrets.randbelow(900_000) + 100_000
+
+
+def otp_expiry() -> datetime:
+    """Return the UTC datetime when a freshly-generated OTP expires."""
+    return datetime.now(tz=timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINS)
+
+
 # ── JWT Token ──────────────────────────────────────────────────────────────────
 
 def create_access_token(data: dict) -> str:
@@ -69,11 +92,76 @@ def create_access_token(data: dict) -> str:
     """
     payload = data.copy()
     expire = datetime.now(tz=timezone.utc) + timedelta(
-        minutes=settings.access_token_expire_minutes
+        minutes=_ACCESS_TOKEN_MINS
     )
     payload["exp"] = expire
     payload["iat"] = datetime.now(tz=timezone.utc)
 
-    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    token = jwt.encode(payload, _JWT_SECRET_KEY, algorithm=_JWT_ALGORITHM)
     logger.info("Access token issued for subject: %s", data.get("sub", "unknown"))
     return token
+
+
+def create_refresh_token(data: dict) -> str:
+    """Create a signed JWT refresh token.
+
+    The refresh token has a longer expiration (7 days) and specifies the refresh scope.
+    """
+    payload = data.copy()
+    expire = datetime.now(tz=timezone.utc) + timedelta(days=7)
+    payload["exp"] = expire
+    payload["iat"] = datetime.now(tz=timezone.utc)
+    payload["scope"] = "refresh"
+
+    token = jwt.encode(payload, _JWT_SECRET_KEY, algorithm=_JWT_ALGORITHM)
+    logger.info("Refresh token issued for subject: %s", data.get("sub", "unknown"))
+    return token
+
+
+def create_password_reset_token(user_id: str, username: str) -> str:
+    """Create a temporary password reset token valid for 10 minutes with password_reset scope."""
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "scope": "password_reset"
+    }
+    expire = datetime.now(tz=timezone.utc) + timedelta(minutes=10)
+    payload["exp"] = expire
+    payload["iat"] = datetime.now(tz=timezone.utc)
+
+    token = jwt.encode(payload, _JWT_SECRET_KEY, algorithm=_JWT_ALGORITHM)
+    logger.info("Password reset token issued for subject: %s", user_id)
+    return token
+
+
+def verify_password_reset_token(token: str) -> dict:
+    """Decode and validate a password reset JWT.
+
+    Returns the decoded payload dict on success.
+    Raises ValueError with a descriptive message if the token is expired,
+    tampered, missing, or does not carry the 'password_reset' scope.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            _JWT_SECRET_KEY,
+            algorithms=[_JWT_ALGORITHM],
+        )
+    except Exception as exc:
+        raise ValueError(f"Invalid or expired reset token: {exc}") from exc
+
+    if payload.get("scope") != "password_reset":
+        raise ValueError("Token does not carry password_reset scope.")
+
+    return payload
+
+
+
+async def hash_password_async(plain_password: str) -> str:
+    """Run hash_password in a separate thread to avoid blocking the event loop."""
+    return await asyncio.to_thread(hash_password, plain_password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Run verify_password in a separate thread to avoid blocking the event loop."""
+    return await asyncio.to_thread(verify_password, plain_password, hashed_password)

@@ -22,13 +22,16 @@ NOTE: HF inference API does NOT reliably support response_format=json_object.
 
 import json
 import logging
+import os
 import re
 from typing import Optional
 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI, APITimeoutError, APIError
 
-from app.core.config import settings
 from app.llm.llm_gateway import LLMGateway, LLMRequest, LLMResponse
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +50,20 @@ class HuggingFaceProvider(LLMGateway):
     """
 
     def __init__(self):
-        if not settings.hf_token:
+        hf_token = os.getenv("HF_TOKEN")
+        if not hf_token:
             raise ValueError(
                 "HF_TOKEN is not set. "
                 "Get your token at https://huggingface.co/settings/tokens "
                 "and add it to your .env file."
             )
         self.client = AsyncOpenAI(
-            api_key=settings.hf_token,
-            base_url=settings.hf_base_url,
-            timeout=settings.hf_timeout,
-            max_retries=settings.hf_max_retries,
+            api_key=hf_token,
+            base_url=os.getenv("HF_BASE_URL"),
+            timeout=int(os.getenv("HF_TIMEOUT", "120")),
+            max_retries=int(os.getenv("HF_MAX_RETRIES", "2")),
         )
-        self._default_model = settings.default_model
+        self._default_model = os.getenv("DEFAULT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 
     def get_provider_name(self) -> str:
         return "huggingface"

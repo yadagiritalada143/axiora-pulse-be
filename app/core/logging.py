@@ -1,11 +1,12 @@
 import logging
+import os
 import sys
-from app.core.config import settings
 
 
 def setup_logging() -> None:
     """Configure structured logging for the entire application."""
-    log_level = logging.DEBUG if settings.debug else logging.INFO
+    debug = os.getenv("DEBUG", "true").lower() in ("true", "1", "t", "yes", "y")
+    log_level = logging.DEBUG if debug else logging.INFO
 
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
