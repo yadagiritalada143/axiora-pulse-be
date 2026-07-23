@@ -3,16 +3,20 @@ app/core/security.py
 ────────────────────────────────────────────────────────────────────────────────
 Security utilities: password hashing (PBKDF2-HMAC-SHA256), JWT token creation,
 and OTP generation.
+Security utilities: password hashing (PBKDF2-HMAC-SHA256), JWT token creation,
+and OTP generation.
 
 Password hashing is a one-way operation — it is impossible to decrypt a hashed
 password back to its original value. Verification is done by hashing the
 candidate and comparing the results using a timing-safe comparison.
 """
 import asyncio
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
+import secrets
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +36,7 @@ _OTP_EXPIRE_MINS    = int(os.getenv("OTP_EXPIRE_MINUTES", "10"))
 # ── Constants ──────────────────────────────────────────────────────────────────
 _HASH_ITERATIONS = 260_000  # OWASP recommended iteration count for PBKDF2-SHA256
 _SEPARATOR = ":"
+_OTP_DIGITS = 6
 _OTP_DIGITS = 6
 
 

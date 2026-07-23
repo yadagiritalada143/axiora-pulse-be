@@ -3,6 +3,7 @@ AI Mentor API Routes  —  /api/v1/mentor
 ──────────────────────────────────────────────────────────────────────────────
 Handles conversation with the founder-facing AI Mentor.
 Exposes an endpoint to chat.
+Exposes an endpoint to chat.
 
 Health checks are handled globally at GET /health (see main.py).
 """

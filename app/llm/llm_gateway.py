@@ -72,6 +72,15 @@ def get_llm_gateway(provider: Optional[str] = None) -> LLMGateway:
         )
         provider = "openai"
 
+    # Dynamic fallback: if HuggingFace is selected but token is missing,
+    # and we have an OpenAI API key, fallback to OpenAI.
+    if provider == "huggingface" and not settings.hf_token and settings.openai_api_key:
+        logger.warning(
+            "HF_TOKEN is not set, but OPENAI_API_KEY is available. "
+            "Dynamically falling back to 'openai' provider."
+        )
+        provider = "openai"
+
     if provider == "huggingface":
         from app.llm.providers.huggingface_provider import HuggingFaceProvider
         return HuggingFaceProvider()

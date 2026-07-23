@@ -37,6 +37,8 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
 from app.core.logging import setup_logging
 from app.core.limiter import limiter
 from app.db.database import run_migrations
+from app.core.limiter import limiter
+from app.db.database import run_migrations
 from app.skills.skill_registry import skill_registry
 
 # ── Logging must be configured before any other imports ───────────────────────
@@ -52,6 +54,12 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info(f"  {APP_NAME}  v{APP_VERSION}")
     logger.info("=" * 60)
+
+    # Validate security config (JWT Secret validation)
+    _validate_security_config()
+
+    # Apply any pending DB migrations (Alembic upgrade head)
+    await run_migrations()
 
     # Validate security config (JWT Secret validation)
     _validate_security_config()
@@ -111,6 +119,7 @@ _OPENAPI_TAGS = [
     {
         "name": "AI Mentor",
         "description": "Founder-facing AI Mentor: chat.",
+        "description": "Founder-facing AI Mentor: chat.",
     },
     {
         "name": "Auth",
@@ -148,6 +157,10 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ── Rate Limiter ──────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── CORS ──────────────────────────────────────────────────────────────────────────
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
 if DEBUG and (not origins or "*" in origins):
@@ -158,6 +171,8 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=allow_credentials,
     allow_origins=origins,
     allow_credentials=allow_credentials,
     allow_methods=["*"],
