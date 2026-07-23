@@ -24,6 +24,7 @@ from datetime import datetime
 
 from app.llm.llm_gateway import get_llm_gateway
 from app.models.orchestration_models import (
+    IdeaInput,
     OrchestrationRequest,
     OrchestrationResponse,
     ValidationResult,
@@ -68,7 +69,7 @@ class Orchestrator:
 
         try:
             # ── Step 1: Build agent context ────────────────────────────────────
-            agent_input = context_builder.build_agent_input(request.idea)
+            agent_input = await context_builder.build_agent_input(request.idea)
 
             # ── Step 2: Select agents via Planner ──────────────────────────────
             agent_names = planner.plan(request)
@@ -141,6 +142,15 @@ class Orchestrator:
                 recommendations=validation_data["recommendations"],
                 agent_results=aggregated["agent_results"],
                 mentor_summary=validation_data["mentor_summary"],
+                inferred_idea=IdeaInput(
+                    idea_title=agent_input.idea_title,
+                    idea_description=agent_input.idea_description,
+                    problem_statement=agent_input.problem_statement,
+                    target_customer=agent_input.target_customer,
+                    industry=agent_input.industry,
+                    founder_validation_goal=agent_input.founder_validation_goal,
+                    geography=agent_input.geography,
+                ),
             )
 
             logger.info(

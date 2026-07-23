@@ -10,15 +10,33 @@ ReDoc:        http://localhost:8000/redoc
 Health:       http://localhost:8000/health
 """
 import logging
+import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.core.config import settings
+# Load .env before anything else
+load_dotenv()
+
+# ── App configuration from environment ─────────────────────────────────────────
+APP_NAME        = os.getenv("APP_NAME", "Axiora Pulse AI Engine")
+APP_VERSION     = os.getenv("APP_VERSION", "1.0.0")
+DEBUG           = os.getenv("DEBUG", "true").lower() in ("true", "1", "t", "yes", "y")
+DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "huggingface")
+DEFAULT_MODEL  = os.getenv("DEFAULT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+HF_TOKEN        = os.getenv("HF_TOKEN")
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+JWT_SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "axiora-pulse-change-this-secret-in-production")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
+
 from app.core.logging import setup_logging
+from app.core.limiter import limiter
+from app.db.database import run_migrations
 from app.core.limiter import limiter
 from app.db.database import run_migrations
 from app.skills.skill_registry import skill_registry
@@ -34,8 +52,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # ── STARTUP ────────────────────────────────────────────────────────────────
     logger.info("=" * 60)
-    logger.info(f"  {settings.app_name}  v{settings.app_version}")
+    logger.info(f"  {APP_NAME}  v{APP_VERSION}")
     logger.info("=" * 60)
+
+    # Validate security config (JWT Secret validation)
+    _validate_security_config()
+
+    # Apply any pending DB migrations (Alembic upgrade head)
+    await run_migrations()
 
     # Validate security config (JWT Secret validation)
     _validate_security_config()
@@ -52,35 +76,35 @@ async def lifespan(app: FastAPI):
     _validate_provider_config()
 
     logger.info("Server is ready.")
-    if settings.debug:
+    if DEBUG:
         logger.info(f"  Docs  →  http://localhost:8000/docs")
     logger.info(f"  Health →  http://localhost:8000/health")
     logger.info("=" * 60)
 
     yield  # ← Application runs here
 
-    # ── SHUTDOWN ───────────────────────────────────────────────────────────────
-    logger.info(f"Shutting down {settings.app_name}…")
+    # ── SHUTDOWN ────────────────────────────────────────────────────────────────
+    logger.info(f"Shutting down {APP_NAME}…")
 
 
 def _validate_provider_config() -> None:
     """Warn at startup if the configured provider has no API key."""
-    provider = settings.default_provider
-    if provider == "huggingface" and not settings.hf_token:
+    provider = DEFAULT_PROVIDER
+    if provider == "huggingface" and not HF_TOKEN:
         logger.warning(
             "⚠  HF_TOKEN is not set. "
             "Add it to your .env file. "
             "Get a token at https://huggingface.co/settings/tokens"
         )
-    elif provider == "openai" and not settings.openai_api_key:
+    elif provider == "openai" and not OPENAI_API_KEY:
         logger.warning("⚠  OPENAI_API_KEY is not set. Add it to your .env file.")
     else:
-        logger.info(f"LLM provider: {provider} | model: {settings.default_model}")
+        logger.info(f"LLM provider: {provider} | model: {DEFAULT_MODEL}")
 
 
 def _validate_security_config() -> None:
     """Validate JWT secret is customized if not in debug mode."""
-    if settings.jwt_secret_key == "axiora-pulse-change-this-secret-in-production" and not settings.debug:
+    if JWT_SECRET_KEY == "axiora-pulse-change-this-secret-in-production" and not DEBUG:
         logger.critical("CRITICAL SECURITY ERROR: JWT_SECRET_KEY is using the insecure default value in production mode!")
         raise ValueError(
             "CRITICAL SECURITY ERROR: JWT_SECRET_KEY is using the insecure default value in production mode! "
@@ -94,6 +118,7 @@ def _validate_security_config() -> None:
 _OPENAPI_TAGS = [
     {
         "name": "AI Mentor",
+        "description": "Founder-facing AI Mentor: chat.",
         "description": "Founder-facing AI Mentor: chat.",
     },
     {
@@ -115,16 +140,16 @@ _OPENAPI_TAGS = [
 ]
 
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
+    title=APP_NAME,
+    version=APP_VERSION,
     description=(
         "Core AI Orchestration Engine for Axiora Pulse. "
         "Converts founder ideas into structured validation journeys using "
         "MCP, Skills, and Agentic Workflows."
     ),
     openapi_tags=_OPENAPI_TAGS,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
+    docs_url="/docs" if DEBUG else None,
+    redoc_url="/redoc" if DEBUG else None,
     lifespan=lifespan,
 )
 
@@ -132,10 +157,13 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
-# Parse allowed origins from settings
-origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
-if settings.debug and (not origins or "*" in origins):
+# ── Rate Limiter ──────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── CORS ──────────────────────────────────────────────────────────────────────────
+origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
+if DEBUG and (not origins or "*" in origins):
     origins = ["*"]
     allow_credentials = False
 else:
@@ -143,6 +171,8 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=allow_credentials,
     allow_origins=origins,
     allow_credentials=allow_credentials,
     allow_methods=["*"],
@@ -165,8 +195,8 @@ app.include_router(auth_router.router, prefix="/api/v1")
 @app.get("/", tags=["Root"], summary="Root endpoint")
 async def root() -> dict:
     return {
-        "message": f"Welcome to {settings.app_name}",
-        "version": settings.app_version,
+        "message": f"Welcome to {APP_NAME}",
+        "version": APP_VERSION,
         "docs": "/docs",
         "health": "/health",
         "endpoints": {
@@ -186,10 +216,10 @@ async def health() -> dict:
 
     return {
         "status": "healthy",
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "llm_provider": settings.default_provider,
-        "llm_model": settings.default_model,
+        "app": APP_NAME,
+        "version": APP_VERSION,
+        "llm_provider": DEFAULT_PROVIDER,
+        "llm_model": DEFAULT_MODEL,
         "skills_loaded": skills,
         "skills_count": len(skills),
         "provider_configured": _is_provider_configured(),
@@ -197,11 +227,11 @@ async def health() -> dict:
 
 
 def _is_provider_configured() -> bool:
-    provider = settings.default_provider
+    provider = DEFAULT_PROVIDER
     if provider == "huggingface":
-        return bool(settings.hf_token)
+        return bool(HF_TOKEN)
     elif provider == "openai":
-        return bool(settings.openai_api_key)
+        return bool(OPENAI_API_KEY)
     elif provider == "anthropic":
-        return bool(settings.anthropic_api_key)
+        return bool(ANTHROPIC_API_KEY)
     return False

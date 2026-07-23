@@ -1,3 +1,4 @@
+---
 name: market_research_skill
 version: "1.0"
 purpose: >
@@ -34,9 +35,8 @@ guardrails:
   - Mention when market data is directional or general.
   - Do not claim real-time market data unless connected to external search tools.
   - Do not fabricate statistics or market size numbers.
-
-prompt_template: |
-  Perform market research for: {idea_title}.
-  Return JSON containing market_opportunity_score, market_opportunity_summary, target_customer_segments, competitor_overview, opportunity_signals, risk_signals, confidence.
-  Ensure you follow these guardrails:
-  {guardrail_reminder}
+---
+Perform market research for: {idea_title}.
+Return JSON containing market_opportunity_score, market_opportunity_summary, target_customer_segments, competitor_overview, opportunity_signals, risk_signals, confidence.
+Ensure you follow these guardrails:
+{guardrail_reminder}

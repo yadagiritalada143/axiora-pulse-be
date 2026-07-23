@@ -3,27 +3,31 @@ OpenAI Provider – alternative to HuggingFace.
 Set DEFAULT_PROVIDER=openai and OPENAI_API_KEY in .env to use this.
 """
 import logging
+import os
 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI, APITimeoutError, APIError
 
-from app.core.config import settings
 from app.llm.llm_gateway import LLMGateway, LLMRequest, LLMResponse
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(LLMGateway):
     def __init__(self):
-        if not settings.openai_api_key:
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
             raise ValueError(
                 "OPENAI_API_KEY is not set. Add it to your .env file."
             )
         self.client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            timeout=settings.openai_timeout,
-            max_retries=settings.openai_max_retries,
+            api_key=openai_api_key,
+            timeout=int(os.getenv("OPENAI_TIMEOUT", "60")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
         )
-        self._default_model = settings.default_model or "gpt-4o-mini"
+        self._default_model = os.getenv("DEFAULT_MODEL") or "gpt-4o-mini"
         if "/" in self._default_model or "llama" in self._default_model.lower():
             self._default_model = "gpt-4o-mini"
 

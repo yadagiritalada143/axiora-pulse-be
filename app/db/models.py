@@ -14,7 +14,7 @@ Column mapping (spec → SQLAlchemy):
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Integer, String, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -69,3 +69,32 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} username={self.username!r} role={self.role!r}>"
+
+
+class MentorSessionORM(Base):
+    """Persisted AI Mentor session record."""
+
+    __tablename__ = "mentor_sessions"
+
+    session_id: Mapped[str] = mapped_column(
+        String(255), primary_key=True, index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    state: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="GATHERING_INFO"
+    )
+    idea: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    conversation_history: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    validation_result: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<MentorSessionORM session_id={self.session_id!r} state={self.state!r}>"
+

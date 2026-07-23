@@ -1,3 +1,4 @@
+---
 name: financial_readiness_skill
 version: "1.0"
 purpose: >
@@ -34,9 +35,8 @@ output_schema:
 guardrails:
   - This skill must not provide loan eligibility advice, tax advice, investment advice, accounting advice, valuation advice, banking advice, or professional financial planning.
   - Must include educational disclaimer: "This is educational and decision-support guidance only. It is not legal, tax, accounting, banking, investment, loan, or professional financial advice."
-
-prompt_template: |
-  Analyze the financial readiness for the venture: {idea_title}.
-  Return JSON containing financial_readiness_score, cost_category_summary, revenue_model_options, pricing_consideration_notes, funding_gap_awareness, financial_risk_flags, confidence.
-  Ensure you follow these guardrails:
-  {guardrail_reminder}
+---
+Analyze the financial readiness for the venture: {idea_title}.
+Return JSON containing financial_readiness_score, cost_category_summary, revenue_model_options, pricing_consideration_notes, funding_gap_awareness, financial_risk_flags, confidence.
+Ensure you follow these guardrails:
+{guardrail_reminder}

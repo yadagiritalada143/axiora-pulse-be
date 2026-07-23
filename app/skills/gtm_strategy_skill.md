@@ -1,3 +1,4 @@
+---
 name: gtm_strategy_skill
 version: "1.0"
 purpose: >
@@ -31,9 +32,8 @@ guardrails:
   - Focus on early validation and organic traction.
   - Avoid expensive, large-scale marketing suggestions for MVP stage.
   - Keep recommendations highly practical and low-cost.
-
-prompt_template: |
-  Analyze the Go-To-Market strategy for: {idea_title}.
-  Return JSON containing gtm_readiness_score, positioning_recommendation, acquisition_channels, early_traction_ideas, messaging_suggestions, confidence.
-  Ensure you follow these guardrails:
-  {guardrail_reminder}
+---
+Analyze the Go-To-Market strategy for: {idea_title}.
+Return JSON containing gtm_readiness_score, positioning_recommendation, acquisition_channels, early_traction_ideas, messaging_suggestions, confidence.
+Ensure you follow these guardrails:
+{guardrail_reminder}

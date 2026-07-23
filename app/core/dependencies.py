@@ -20,17 +20,23 @@ Usage:
         return {"id": current_user.id, "username": current_user.username}
 """
 import logging
+import os
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import User
+
+load_dotenv()
+
+_JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "axiora-pulse-change-this-secret-in-production")
+_JWT_ALGORITHM  = os.getenv("JWT_ALGORITHM", "HS256")
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +67,8 @@ async def get_current_user(
     try:
         payload = jwt.decode(
             token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm],
+            _JWT_SECRET_KEY,
+            algorithms=[_JWT_ALGORITHM],
         )
     except JWTError as exc:
         logger.warning("JWT decode failed: %s", exc)

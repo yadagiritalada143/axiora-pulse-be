@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.llm.llm_gateway import get_llm_gateway, LLMRequest
 from app.models.orchestration_models import OrchestrationRequest, IdeaInput, WorkflowType
 from app.orchestration.orchestrator import orchestrator
+from app.skills.skill_registry import skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -30,36 +31,6 @@ class MentorSession(BaseModel):
     validation_result: Optional[Dict[str, Any]] = None
 
 
-class MentorSessionStore:
-    """In-memory cache for founder mentoring sessions."""
-
-    def __init__(self):
-        self._sessions: Dict[str, MentorSession] = {}
-
-    def get_or_create(self, session_id: str, workspace_id: Optional[str] = None) -> MentorSession:
-        if session_id not in self._sessions:
-            w_id = workspace_id or f"ws-{uuid.uuid4().hex[:8]}"
-            self._sessions[session_id] = MentorSession(
-                session_id=session_id,
-                workspace_id=w_id
-            )
-            logger.info(f"[MentorStore] Created new session: {session_id} in workspace: {w_id}")
-        return self._sessions[session_id]
-
-    def reset(self, session_id: str) -> MentorSession:
-        if session_id in self._sessions:
-            w_id = self._sessions[session_id].workspace_id
-            self._sessions[session_id] = MentorSession(
-                session_id=session_id,
-                workspace_id=w_id
-            )
-            logger.info(f"[MentorStore] Reset session: {session_id}")
-            return self._sessions[session_id]
-        return self.get_or_create(session_id)
-
-
-# Global singleton store
-mentor_store = MentorSessionStore()
 
 
 # ── LLM Prompts ────────────────────────────────────────────────────────────────
@@ -83,32 +54,86 @@ Guidelines:
 3. Return raw JSON ONLY. No markdown formatting like ```json ... ```. No extra text.
 """
 
-MENTOR_SYSTEM_PROMPT_TEMPLATE = """
-You are the Axiora Pulse AI Mentor & Co-Founder. You are helping a founder refine and validate their startup idea.
-Be supportive, direct, and encouraging but realistic. Maintain a professional co-founder tone.
+# ── Dynamic session state block (appended to skill knowledge base) ─────────────
+
+_SESSION_STATE_TEMPLATE = """
+
+══════════════════════════════════════════════════════
+CURRENT SESSION CONTEXT
+══════════════════════════════════════════════════════
 
 Current Workflow State: {state}
 Extracted Idea details: {idea_json}
 Missing required fields to run validation: {missing_fields}
 
-Guidelines:
+State-Specific Instructions:
 1. If state is GATHERING_INFO:
    - Ask clarifying, targeted questions to help the founder fill in the missing fields: {missing_fields}.
    - Ask only ONE or TWO clear questions at a time. Keep it conversational.
    - If they gave you a vague description, help them expand it.
+   - Provide a useful insight after every two or three questions.
+   - Follow the progressive disclosure rules from your knowledge base.
 2. If state is READY_TO_VALIDATE:
    - Summarize the idea you've understood based on the extracted fields.
    - Explain that you are ready to trigger the AI Orchestration validation analysis.
    - Tell them they can click the "Run Validation" button on the dashboard or tell you "Run validation analysis".
-3. If state is VALIDATED:
+3. If state is VALIDATING:
+   - Let the user know the validation engine is processing their idea.
+4. If state is VALIDATED:
    - Comment on the validation run result.
    - Summarize the final score ({validation_score}/100) and the verdict ({validation_verdict}).
    - Highlight the main strengths and the critical risks.
    - Give actionable advice on what they should address next.
-4. General Guardrails:
-   - Never guarantee financial success or give legal, tax, or investment advice.
-   - Keep answers clear and formatted in markdown.
+   - Produce a practical 7-day action plan when appropriate.
+
+Remember: Follow your complete knowledge base above for behaviour, response format,
+questioning style, devil's advocate protocol, and all guardrails.
 """
+
+
+def _build_mentor_system_prompt(
+    state: str,
+    idea_json: str,
+    missing_fields: str,
+    validation_score: float = 0.0,
+    validation_verdict: str = "N/A",
+) -> str:
+    """Build the full mentor system prompt by combining the core mentor specification,
+    the specific idea validation mentor subpart, and the dynamic session state."""
+    core_skill = skill_registry.get("ai_mentor_core_skill")
+    val_skill = skill_registry.get("ai_idea_validation_mentor_skill")
+
+    parts = []
+
+    if core_skill and core_skill.prompt_template:
+        parts.append(core_skill.prompt_template)
+        logger.info("[MentorService] Loaded ai_mentor_core_skill (%d chars)", len(core_skill.prompt_template))
+
+    if val_skill and val_skill.prompt_template:
+        parts.append(val_skill.prompt_template)
+        logger.info("[MentorService] Loaded ai_idea_validation_mentor_skill subpart (%d chars)", len(val_skill.prompt_template))
+
+    if not parts:
+        logger.warning("[MentorService] Mentor skills not found — using minimal fallback prompt")
+        knowledge_base = (
+            "You are the Axiora Pulse AI Mentor & Co-Founder.\n"
+            "Help the founder clarify, challenge, evaluate and validate their business idea.\n"
+            "Be supportive, direct, evidence-driven and politely firm.\n"
+            "Never guarantee success or give legal, tax or investment advice.\n"
+        )
+    else:
+        knowledge_base = "\n\n".join(parts)
+
+    # Append the dynamic session context
+    session_block = _SESSION_STATE_TEMPLATE.format(
+        state=state,
+        idea_json=idea_json,
+        missing_fields=missing_fields,
+        validation_score=validation_score,
+        validation_verdict=validation_verdict,
+    )
+
+    return knowledge_base + session_block
 
 
 # ── Service Implementation ─────────────────────────────────────────────────────
@@ -145,10 +170,6 @@ class MentorService:
                     idea_title=session.idea.get("idea_title") or "Unnamed Venture",
                     idea_description=session.idea.get("idea_description") or "No description provided.",
                     problem_statement=session.idea.get("problem_statement") or "No problem statement.",
-                    target_customer=session.idea.get("target_customer") or "General audience.",
-                    industry=session.idea.get("industry") or "general",
-                    founder_validation_goal=session.idea.get("founder_validation_goal") or "validate my idea",
-                    geography=session.idea.get("geography") or "global"
                 )
 
                 request = OrchestrationRequest(
@@ -238,12 +259,12 @@ class MentorService:
             score = session.validation_result.get("validation_score", 0.0)
             verdict = str(session.validation_result.get("verdict", "hold")).upper()
 
-        sys_prompt = MENTOR_SYSTEM_PROMPT_TEMPLATE.format(
+        sys_prompt = _build_mentor_system_prompt(
             state=session.state,
             idea_json=json.dumps(session.idea, indent=2),
             missing_fields=", ".join(missing) if missing else "None",
             validation_score=score,
-            validation_verdict=verdict
+            validation_verdict=verdict,
         )
 
         # Build prompt using chat messages

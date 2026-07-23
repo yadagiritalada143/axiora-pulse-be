@@ -4,7 +4,7 @@ alembic/env.py
 Alembic environment configuration — async-aware.
 
 Key design decisions:
-  • DATABASE_URL is read from app.core.config.settings (which reads .env),
+  • DATABASE_URL is read directly from the .env file via python-dotenv,
     keeping a single source of truth.
   • Uses asyncio / SQLAlchemy async engine so migrations run with the same
     driver (asyncpg) as the main application.
@@ -12,25 +12,27 @@ Key design decisions:
     schema changes with `alembic revision --autogenerate`.
 """
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# ── Load app config and models ────────────────────────────────────────────────
-# These imports must happen before Alembic touches target_metadata.
-from app.core.config import settings
+# ── Load environment and models ──────────────────────────────────────────
+load_dotenv()
 from app.db.models import Base  # noqa: F401 – registers all ORM models
 
 # ── Alembic Config object ─────────────────────────────────────────────────────
 config = context.config
 
-# Override the sqlalchemy.url with the value from our settings
+# Override the sqlalchemy.url with DATABASE_URL from .env
 # (keeps .env as the single source of truth).
 # Escape % signs — ConfigParser treats them as interpolation markers.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+_database_url = os.getenv("DATABASE_URL", "")
+config.set_main_option("sqlalchemy.url", _database_url.replace("%", "%%"))
 
 # Set up Python logging from alembic.ini [loggers] section
 if config.config_file_name is not None:

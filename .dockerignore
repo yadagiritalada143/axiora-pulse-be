@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Never bake secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+*.md
+!README.md
+
+logs/
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

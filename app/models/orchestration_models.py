@@ -28,13 +28,6 @@ class IdeaInput(BaseModel):
     idea_title: str = Field(..., min_length=3, description="Short name of the idea")
     idea_description: str = Field(..., min_length=10, description="Full description of the idea")
     problem_statement: str = Field(..., min_length=10, description="The core problem being solved")
-    target_customer: str = Field(..., min_length=5, description="Who the customer is")
-    industry: str = Field(default="general", description="Industry / sector")
-    founder_validation_goal: str = Field(
-        default="validate my idea",
-        description="What the founder wants to learn from this validation",
-    )
-    geography: str = Field(default="global", description="Target geography")
 
 
 class OrchestrationRequest(BaseModel):
@@ -71,6 +64,7 @@ class ValidationResult(BaseModel):
     recommendations: list[str]
     agent_results: dict[str, Any]
     mentor_summary: str
+    inferred_idea: Optional[IdeaInput] = None
     disclaimer: str = (
         "This is educational and decision-support guidance only. "
         "It is not legal, tax, accounting, banking, investment, loan, "

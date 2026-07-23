@@ -14,19 +14,23 @@ Session usage:
   - Inject `AsyncSession` via `Depends(get_db)` in route handlers.
 """
 import logging
+import os
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import settings
+load_dotenv()
+
+_DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 logger = logging.getLogger(__name__)
 
 # ── Engine ─────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
-    settings.database_url,
+    _DATABASE_URL,
     echo=False,          # Set to True to log all SQL queries (debug only)
     pool_pre_ping=True,  # Detect stale connections before handing them out
     pool_size=10,
@@ -73,7 +77,7 @@ def _get_alembic_cfg() -> Config:
     cfg = Config(str(ini_path))
     # Escape % signs for ConfigParser interpolation (e.g. %40 → %%40).
     # Without this, URL-encoded characters in the DB password crash configparser.
-    safe_url = settings.database_url.replace("%", "%%")
+    safe_url = _DATABASE_URL.replace("%", "%%")
     cfg.set_main_option("sqlalchemy.url", safe_url)
     return cfg
 

@@ -2,7 +2,13 @@
 app/models/auth_models.py
 ────────────────────────────────────────────────────────────────────────────────
 Pydantic request/response models for all authentication endpoints.
+Pydantic request/response models for all authentication endpoints.
 
+Endpoints covered:
+  POST /register    → UserRegisterRequest  → RegisterResponse
+  POST /verifyOTP   → VerifyOTPRequest     → VerifyOTPResponse
+  POST /resendOTP   → ResendOTPRequest     → RegisterResponse
+  POST /login       → UserLoginRequest     → LoginSuccessResponse
 Endpoints covered:
   POST /register    → UserRegisterRequest  → RegisterResponse
   POST /verifyOTP   → VerifyOTPRequest     → VerifyOTPResponse
@@ -10,15 +16,16 @@ Endpoints covered:
   POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
 from typing import Literal, Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator
 
 
 # ── Request Models ─────────────────────────────────────────────────────────────
 
 class UserRegisterRequest(BaseModel):
     """Payload for POST /api/v1/auth/register."""
-    username: EmailStr          # email address used as the unique username
+    username: EmailStr = Field(validation_alias=AliasChoices("username", "email"))          # email address used as the unique username
     password: str
 
     @field_validator("password")
@@ -51,8 +58,21 @@ class UserRegisterRequest(BaseModel):
 
 class UserLoginRequest(BaseModel):
     """Payload for POST /api/v1/auth/login."""
-    username: EmailStr
+    username: EmailStr = Field(validation_alias=AliasChoices("username", "email"))
     password: str
+
+
+class VerifyOTPRequest(BaseModel):
+    """Payload for POST /api/v1/auth/verifyOTP."""
+    id: int
+    otp: int
+    flow: Literal["register"]   # extensible for future flows (e.g. "login")
+
+
+class ResendOTPRequest(BaseModel):
+    """Payload for POST /api/v1/auth/resendOTP."""
+    id: int
+    flow: Literal["register"]
 
 
 class VerifyOTPRequest(BaseModel):
@@ -84,6 +104,20 @@ class VerifyOTPResponse(BaseModel):
     jwt: Optional[str] = None       # Present only on success
 
 
+class RegisterResponse(BaseModel):
+    """Returned after successful registration or OTP resend."""
+    userid: int
+    username: str
+    registerMFA: bool
+
+
+class VerifyOTPResponse(BaseModel):
+    """Returned after OTP verification attempt."""
+    status: str                     # "success" | "failed"
+    message: str
+    jwt: Optional[str] = None       # Present only on success
+
+
 class LoginSuccessResponse(BaseModel):
     """Returned on successful login."""
     status: str = "success"
@@ -95,7 +129,7 @@ class LoginSuccessResponse(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     """Payload for POST /api/v1/auth/forgot-password/request."""
-    emailOrMobile: str
+    emailOrMobile: str = Field(validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile"))
 
 
 class ForgotPasswordResponse(BaseModel):
@@ -106,7 +140,7 @@ class ForgotPasswordResponse(BaseModel):
 
 class ForgotPasswordVerifyRequest(BaseModel):
     """Payload for POST /api/v1/auth/forgot-password/verify."""
-    emailOrMobile: str
+    emailOrMobile: str = Field(validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile"))
     code: int
 
 
@@ -203,7 +237,7 @@ class LoginOTPResponse(BaseModel):
 
 class VerifyLoginRequest(BaseModel):
     """Payload for POST /api/v1/auth/verify-login."""
-    emailOrMobile: str
+    emailOrMobile: str = Field(validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile"))
     otp: int
 
 
@@ -213,8 +247,13 @@ class VerifyLoginResponse(BaseModel):
     message: str = "Login successful."
     access_token: str
     refresh_token: str
+    access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+
+
+
 
 
 

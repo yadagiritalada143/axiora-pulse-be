@@ -15,13 +15,25 @@ Configuration (from .env):
 """
 import asyncio
 import logging
+import os
 import smtplib
 from dataclasses import dataclass
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from app.core.config import settings
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── SMTP environment variable helpers ─────────────────────────────────────────
+_SMTP_HOST       = os.getenv("SMTP_HOST", "")
+_SMTP_PORT       = int(os.getenv("SMTP_PORT", "587"))
+_SMTP_USER       = os.getenv("SMTP_USER", "")
+_SMTP_PASSWORD   = os.getenv("SMTP_PASSWORD", "")
+_SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "")
+_SMTP_FROM_NAME  = os.getenv("SMTP_FROM_NAME", "Axiora Pulse")
+_OTP_EXPIRE_MINS = int(os.getenv("OTP_EXPIRE_MINUTES", "10"))
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +59,13 @@ def _build_otp_email(to_email: str, otp: int) -> MIMEMultipart:
     """Construct the branded OTP email (plain-text + HTML multipart)."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Axiora Pulse Verification Code"
-    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    msg["From"] = f"{_SMTP_FROM_NAME} <{_SMTP_FROM_EMAIL}>"
     msg["To"] = to_email
 
     plain_body = (
         f"Hello,\n\n"
         f"Your Axiora Pulse verification code is: {otp}\n\n"
-        f"This code is valid for {settings.otp_expire_minutes} minutes.\n"
+        f"This code is valid for {_OTP_EXPIRE_MINS} minutes.\n"
         f"If you did not request this, please ignore this email.\n\n"
         f"— The Axiora Pulse Team"
     )
@@ -95,7 +107,7 @@ def _build_otp_email(to_email: str, otp: int) -> MIMEMultipart:
         <tr>
           <td style="text-align:center;">
             <p style="margin:0;color:#888;font-size:13px;line-height:1.6;">
-              This code expires in <strong>{settings.otp_expire_minutes} minutes</strong>.<br>
+              This code expires in <strong>{_OTP_EXPIRE_MINS} minutes</strong>.<br>
               If you didn&rsquo;t request this, you can safely ignore this email.
             </p>
           </td>
@@ -120,12 +132,12 @@ def _build_otp_email(to_email: str, otp: int) -> MIMEMultipart:
 
 def _smtp_send(to_email: str, msg: MIMEMultipart) -> None:
     """Blocking SMTP send with STARTTLS — intended to run in a thread pool."""
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+    with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT, timeout=30) as server:
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(settings.smtp_user, settings.smtp_password)
-        server.sendmail(settings.smtp_from_email, [to_email], msg.as_string())
+        server.login(_SMTP_USER, _SMTP_PASSWORD)
+        server.sendmail(_SMTP_FROM_EMAIL, [to_email], msg.as_string())
     logger.info("OTP email dispatched → %s", to_email)
 
 
@@ -160,13 +172,13 @@ def _build_password_reset_email(to_email: str, otp: int) -> MIMEMultipart:
     """Construct the branded password reset email (plain-text + HTML multipart)."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Reset Your Axiora Pulse Password"
-    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    msg["From"] = f"{_SMTP_FROM_NAME} <{_SMTP_FROM_EMAIL}>"
     msg["To"] = to_email
 
     plain_body = (
         f"Hello,\n\n"
         f"Your Axiora Pulse password reset code is: {otp}\n\n"
-        f"This code is valid for {settings.otp_expire_minutes} minutes.\n"
+        f"This code is valid for {_OTP_EXPIRE_MINS} minutes.\n"
         f"If you did not request this, please ignore this email.\n\n"
         f"— The Axiora Pulse Team"
     )
@@ -208,7 +220,7 @@ def _build_password_reset_email(to_email: str, otp: int) -> MIMEMultipart:
         <tr>
           <td style="text-align:center;">
             <p style="margin:0;color:#888;font-size:13px;line-height:1.6;">
-              This code expires in <strong>{settings.otp_expire_minutes} minutes</strong>.<br>
+              This code expires in <strong>{_OTP_EXPIRE_MINS} minutes</strong>.<br>
               If you didn&rsquo;t request this, you can safely ignore this email.
             </p>
           </td>
@@ -260,13 +272,13 @@ def _build_login_otp_email(to_email: str, otp: int) -> MIMEMultipart:
     """Construct the branded login OTP email (plain-text + HTML multipart)."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Axiora Pulse Login Verification Code"
-    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    msg["From"] = f"{_SMTP_FROM_NAME} <{_SMTP_FROM_EMAIL}>"
     msg["To"] = to_email
 
     plain_body = (
         f"Hello,\n\n"
         f"Your Axiora Pulse login verification code is: {otp}\n\n"
-        f"This code is valid for {settings.otp_expire_minutes} minutes.\n"
+        f"This code is valid for {_OTP_EXPIRE_MINS} minutes.\n"
         f"If you did not request this, please ignore this email.\n\n"
         f"— The Axiora Pulse Team"
     )
@@ -307,7 +319,7 @@ def _build_login_otp_email(to_email: str, otp: int) -> MIMEMultipart:
         <tr>
           <td style="text-align:center;">
             <p style="margin:0;color:#888;font-size:13px;line-height:1.6;">
-              This code expires in <strong>{settings.otp_expire_minutes} minutes</strong>.<br>
+              This code expires in <strong>{_OTP_EXPIRE_MINS} minutes</strong>.<br>
               If you didn&rsquo;t request this, you can safely ignore this email.
             </p>
           </td>

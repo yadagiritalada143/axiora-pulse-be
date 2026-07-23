@@ -1,7 +1,9 @@
 """
 Skill Registry
 ──────────────────────────────────────────────────────────────────────────────
-Loads all *.yaml skill files from the skills/ directory at startup.
+Loads all *.md skill files from the skills/ directory at startup.
+Each file uses YAML frontmatter (between --- delimiters) for metadata and
+a Markdown body for the prompt_template.
 Provides a singleton registry that agents use to look up their skill.
 """
 import logging
@@ -18,7 +20,7 @@ SKILLS_DIR = Path(__file__).parent
 # ── Skill object ───────────────────────────────────────────────────────────────
 
 class Skill:
-    """Represents a loaded skill from a YAML definition file."""
+    """Represents a loaded skill from a Markdown skill definition file."""
 
     def __init__(self, data: dict):
         self.name: str = data.get("name", "")
@@ -70,7 +72,9 @@ class Skill:
 
 class SkillRegistry:
     """
-    Singleton that loads and caches all skill YAML files at startup.
+    Singleton that loads and caches all skill Markdown files at startup.
+    Each *.md file must begin with a YAML frontmatter block (--- ... ---).
+    The frontmatter holds metadata; the body becomes the prompt_template.
     Agents call skill_registry.get("skill_name") to retrieve their skill.
     """
 
@@ -85,23 +89,42 @@ class SkillRegistry:
 
     def load_all(self) -> None:
         """
-        Scan the skills/ directory and load every *.yaml file.
+        Scan the skills/ directory and load every *.md file.
+        Each file must start with a YAML frontmatter block (--- ... ---).
+        The body after the closing --- becomes the prompt_template.
         Called once at application startup.
         """
         if self._loaded:
             return
 
-        yaml_files = list(SKILLS_DIR.glob("*.yaml"))
-        if not yaml_files:
-            logger.warning(f"[SkillRegistry] No skill YAML files found in {SKILLS_DIR}")
+        md_files = list(SKILLS_DIR.glob("*.md"))
+        if not md_files:
+            logger.warning(f"[SkillRegistry] No skill Markdown files found in {SKILLS_DIR}")
 
-        for file in yaml_files:
+        for file in md_files:
             try:
                 with open(file, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
+                    content = f.read()
 
-                if not data or "name" not in data:
-                    logger.warning(f"[SkillRegistry] Skipping invalid skill file: {file.name}")
+                # Parse YAML frontmatter delimited by ---
+                if not content.startswith("---"):
+                    logger.warning(
+                        f"[SkillRegistry] Skipping {file.name}: missing frontmatter (no leading ---)"
+                    )
+                    continue
+
+                parts = content.split("---", 2)
+                if len(parts) < 3:
+                    logger.warning(
+                        f"[SkillRegistry] Skipping {file.name}: malformed frontmatter (no closing ---)"
+                    )
+                    continue
+
+                data = yaml.safe_load(parts[1]) or {}
+                data["prompt_template"] = parts[2].strip()
+
+                if "name" not in data:
+                    logger.warning(f"[SkillRegistry] Skipping {file.name}: 'name' missing from frontmatter")
                     continue
 
                 skill = Skill(data)

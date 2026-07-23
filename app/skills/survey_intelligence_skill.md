@@ -1,3 +1,4 @@
+---
 name: survey_intelligence_skill
 version: "1.0"
 purpose: >
@@ -27,9 +28,8 @@ guardrails:
   - Keep surveys short, sweet, and engaging (5 to 8 questions max).
   - Avoid biased or leading questions.
   - Do not ask for highly sensitive personal data unless strictly necessary.
-
-prompt_template: |
-  Generate survey questions for: {idea_title}.
-  Return JSON containing survey_title, survey_objective, questions, confidence.
-  Ensure you follow these guardrails:
-  {guardrail_reminder}
+---
+Generate survey questions for: {idea_title}.
+Return JSON containing survey_title, survey_objective, questions, confidence.
+Ensure you follow these guardrails:
+{guardrail_reminder}
