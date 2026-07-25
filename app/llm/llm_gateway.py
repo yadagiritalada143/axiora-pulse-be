@@ -61,20 +61,11 @@ def get_llm_gateway(provider: Optional[str] = None) -> LLMGateway:
 
     load_dotenv()
     logger = logging.getLogger(__name__)
-    provider = provider or os.getenv("DEFAULT_PROVIDER", "huggingface")
+    provider = provider or os.getenv("DEFAULT_PROVIDER")
 
     # Dynamic fallback: if HuggingFace is selected but token is missing,
     # and we have an OpenAI API key, fallback to OpenAI.
     if provider == "huggingface" and not os.getenv("HF_TOKEN") and os.getenv("OPENAI_API_KEY"):
-        logger.warning(
-            "HF_TOKEN is not set, but OPENAI_API_KEY is available. "
-            "Dynamically falling back to 'openai' provider."
-        )
-        provider = "openai"
-
-    # Dynamic fallback: if HuggingFace is selected but token is missing,
-    # and we have an OpenAI API key, fallback to OpenAI.
-    if provider == "huggingface" and not settings.hf_token and settings.openai_api_key:
         logger.warning(
             "HF_TOKEN is not set, but OPENAI_API_KEY is available. "
             "Dynamically falling back to 'openai' provider."

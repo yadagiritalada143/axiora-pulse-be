@@ -27,7 +27,23 @@ APP_NAME        = os.getenv("APP_NAME", "Axiora Pulse AI Engine")
 APP_VERSION     = os.getenv("APP_VERSION", "1.0.0")
 DEBUG           = os.getenv("DEBUG", "true").lower() in ("true", "1", "t", "yes", "y")
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "huggingface")
-DEFAULT_MODEL  = os.getenv("DEFAULT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+DEFAULT_MODEL   = os.getenv("DEFAULT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+
+# Per-provider model selection (takes priority over DEFAULT_MODEL for each provider)
+HF_MODEL        = os.getenv("HF_MODEL", DEFAULT_MODEL)
+OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+AZURE_OPENAI_MODEL = os.getenv("AZURE_OPENAI_MODEL", "gpt-4o")
+
+# Resolve the model that will actually be used for the active provider
+_PROVIDER_MODEL_MAP = {
+    "huggingface":  HF_MODEL,
+    "openai":       OPENAI_MODEL,
+    "anthropic":    ANTHROPIC_MODEL,
+    "azure_openai": AZURE_OPENAI_MODEL,
+}
+ACTIVE_MODEL = _PROVIDER_MODEL_MAP.get(DEFAULT_PROVIDER, DEFAULT_MODEL)
+
 HF_TOKEN        = os.getenv("HF_TOKEN")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -35,8 +51,6 @@ JWT_SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "axiora-pulse-change-this-secret-i
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
 
 from app.core.logging import setup_logging
-from app.core.limiter import limiter
-from app.db.database import run_migrations
 from app.core.limiter import limiter
 from app.db.database import run_migrations
 from app.skills.skill_registry import skill_registry
@@ -54,12 +68,6 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info(f"  {APP_NAME}  v{APP_VERSION}")
     logger.info("=" * 60)
-
-    # Validate security config (JWT Secret validation)
-    _validate_security_config()
-
-    # Apply any pending DB migrations (Alembic upgrade head)
-    await run_migrations()
 
     # Validate security config (JWT Secret validation)
     _validate_security_config()
@@ -99,7 +107,7 @@ def _validate_provider_config() -> None:
     elif provider == "openai" and not OPENAI_API_KEY:
         logger.warning("⚠  OPENAI_API_KEY is not set. Add it to your .env file.")
     else:
-        logger.info(f"LLM provider: {provider} | model: {DEFAULT_MODEL}")
+        logger.info(f"LLM provider: {provider} | model: {ACTIVE_MODEL}")
 
 
 def _validate_security_config() -> None:
@@ -119,7 +127,6 @@ _OPENAPI_TAGS = [
     {
         "name": "AI Mentor",
         "description": "Founder-facing AI Mentor: chat.",
-        "description": "Founder-facing AI Mentor: chat.",
     },
     {
         "name": "Auth",
@@ -136,6 +143,10 @@ _OPENAPI_TAGS = [
     {
         "name": "Root",
         "description": "Root discovery endpoint — lists available API routes.",
+    },
+    {
+        "name": "Workspaces",
+        "description": "Workspace management — create, list, retrieve, and delete user workspaces.",
     },
 ]
 
@@ -157,10 +168,6 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── Rate Limiter ──────────────────────────────────────────────────────────────
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 # ── CORS ──────────────────────────────────────────────────────────────────────────
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
 if DEBUG and (not origins or "*" in origins):
@@ -173,8 +180,6 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=allow_credentials,
-    allow_origins=origins,
-    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -184,10 +189,12 @@ app.add_middleware(
 from app.api.v1 import orchestration as orchestration_router
 from app.api.v1 import mentor as mentor_router
 from app.api.v1 import auth as auth_router
+from app.api.v1 import workspace as workspace_router
 
 app.include_router(orchestration_router.router, prefix="/api/v1")
 app.include_router(mentor_router.router, prefix="/api/v1")
 app.include_router(auth_router.router, prefix="/api/v1")
+app.include_router(workspace_router.router, prefix="/api/v1")
 
 
 # ── Root endpoints ─────────────────────────────────────────────────────────────
@@ -219,7 +226,7 @@ async def health() -> dict:
         "app": APP_NAME,
         "version": APP_VERSION,
         "llm_provider": DEFAULT_PROVIDER,
-        "llm_model": DEFAULT_MODEL,
+        "llm_model": ACTIVE_MODEL,
         "skills_loaded": skills,
         "skills_count": len(skills),
         "provider_configured": _is_provider_configured(),

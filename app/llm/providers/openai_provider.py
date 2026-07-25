@@ -24,11 +24,16 @@ class OpenAIProvider(LLMGateway):
             )
         self.client = AsyncOpenAI(
             api_key=openai_api_key,
-            timeout=int(os.getenv("OPENAI_TIMEOUT", "60")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
+            timeout=int(os.getenv("OPENAI_TIMEOUT")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES")),
         )
-        self._default_model = os.getenv("DEFAULT_MODEL") or "gpt-4o-mini"
-        if "/" in self._default_model or "llama" in self._default_model.lower():
+        self._default_model = (
+            os.getenv("OPENAI_MODEL")
+            or os.getenv("DEFAULT_MODEL")
+            or "gpt-4o-mini"
+        )
+        # Strip any HuggingFace-style model names that may have slipped through DEFAULT_MODEL
+        if "/" in self._default_model and not self._default_model.startswith("ft:"):
             self._default_model = "gpt-4o-mini"
 
     def get_provider_name(self) -> str:
@@ -49,8 +54,12 @@ class OpenAIProvider(LLMGateway):
             "model": model,
             "messages": messages,
             "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
         }
+
+        if "gpt-5.4" in model or model.startswith("o1"):
+            kwargs["max_completion_tokens"] = request.max_tokens
+        else:
+            kwargs["max_tokens"] = request.max_tokens
 
         if request.response_format == "json":
             kwargs["response_format"] = {"type": "json_object"}

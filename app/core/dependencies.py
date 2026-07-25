@@ -35,8 +35,8 @@ from app.db.models import User
 
 load_dotenv()
 
-_JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "axiora-pulse-change-this-secret-in-production")
-_JWT_ALGORITHM  = os.getenv("JWT_ALGORITHM", "HS256")
+_JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+_JWT_ALGORITHM  = os.getenv("JWT_ALGORITHM")
 
 logger = logging.getLogger(__name__)
 

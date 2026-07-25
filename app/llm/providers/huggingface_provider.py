@@ -60,10 +60,14 @@ class HuggingFaceProvider(LLMGateway):
         self.client = AsyncOpenAI(
             api_key=hf_token,
             base_url=os.getenv("HF_BASE_URL"),
-            timeout=int(os.getenv("HF_TIMEOUT", "120")),
-            max_retries=int(os.getenv("HF_MAX_RETRIES", "2")),
+            timeout=int(os.getenv("HF_TIMEOUT")),
+            max_retries=int(os.getenv("HF_MAX_RETRIES")),
         )
-        self._default_model = os.getenv("DEFAULT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+        self._default_model = (
+            os.getenv("HF_MODEL")
+            or os.getenv("DEFAULT_MODEL")
+            or "meta-llama/Llama-3.1-8B-Instruct"
+        )
 
     def get_provider_name(self) -> str:
         return "huggingface"

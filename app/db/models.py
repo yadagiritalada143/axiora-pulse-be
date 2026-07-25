@@ -1,7 +1,10 @@
 """
 app/db/models.py
 ────────────────────────────────────────────────────────────────────────────────
-SQLAlchemy ORM model for the User table.
+SQLAlchemy ORM models for:
+  - User table
+  - MentorSessionORM table
+  - Workspace table
 
 Column mapping (spec → SQLAlchemy):
   id                → Integer PK, autoincrement starting at 1
@@ -14,7 +17,7 @@ Column mapping (spec → SQLAlchemy):
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, JSON
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -98,3 +101,30 @@ class MentorSessionORM(Base):
     def __repr__(self) -> str:
         return f"<MentorSessionORM session_id={self.session_id!r} state={self.state!r}>"
 
+
+class Workspace(Base):
+    """Persisted Workspace record — scoped to a user."""
+
+    __tablename__ = "workspaces"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<Workspace id={self.id} name={self.name!r} user_id={self.user_id}>"
