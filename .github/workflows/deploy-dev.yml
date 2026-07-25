@@ -1,0 +1,60 @@
+# axiora-pulse-be/.github/workflows/deploy-dev.yml
+name: Deploy dev
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev-be
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync source to server
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude '.github' --exclude '.venv' \
+            --exclude '__pycache__' --exclude '.env' \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+            ./ "ubuntu@$HOST:/opt/axiora/axiora-pulse-be/"
+
+      - name: Rebuild and restart API
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "ubuntu@$HOST" \
+            'cd /opt/axiora && docker compose up -d --build api && docker image prune -f'
+
+      - name: Health check
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/id_ed25519 "ubuntu@$HOST" \
+                 'docker compose -f /opt/axiora/docker-compose.yml exec -T api curl -fsS localhost:8000/health' 2>/dev/null; then
+              echo "API healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "API did not become healthy. Logs:" >&2
+          ssh -i ~/.ssh/id_ed25519 "ubuntu@$HOST" \
+            'docker compose -f /opt/axiora/docker-compose.yml logs --tail 80 api' >&2
+          exit 1

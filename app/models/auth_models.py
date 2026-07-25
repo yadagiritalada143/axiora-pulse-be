@@ -2,20 +2,13 @@
 app/models/auth_models.py
 ────────────────────────────────────────────────────────────────────────────────
 Pydantic request/response models for all authentication endpoints.
-Pydantic request/response models for all authentication endpoints.
 
 Endpoints covered:
   POST /register    → UserRegisterRequest  → RegisterResponse
   POST /verifyOTP   → VerifyOTPRequest     → VerifyOTPResponse
   POST /resendOTP   → ResendOTPRequest     → RegisterResponse
   POST /login       → UserLoginRequest     → LoginSuccessResponse
-Endpoints covered:
-  POST /register    → UserRegisterRequest  → RegisterResponse
-  POST /verifyOTP   → VerifyOTPRequest     → VerifyOTPResponse
-  POST /resendOTP   → ResendOTPRequest     → RegisterResponse
-  POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
-from typing import Literal, Optional
 from typing import Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator
@@ -75,34 +68,7 @@ class ResendOTPRequest(BaseModel):
     flow: Literal["register"]
 
 
-class VerifyOTPRequest(BaseModel):
-    """Payload for POST /api/v1/auth/verifyOTP."""
-    id: int
-    otp: int
-    flow: Literal["register"]   # extensible for future flows (e.g. "login")
-
-
-class ResendOTPRequest(BaseModel):
-    """Payload for POST /api/v1/auth/resendOTP."""
-    id: int
-    flow: Literal["register"]
-
-
 # ── Response Models ────────────────────────────────────────────────────────────
-
-class RegisterResponse(BaseModel):
-    """Returned after successful registration or OTP resend."""
-    userid: int
-    username: str
-    registerMFA: bool
-
-
-class VerifyOTPResponse(BaseModel):
-    """Returned after OTP verification attempt."""
-    status: str                     # "success" | "failed"
-    message: str
-    jwt: Optional[str] = None       # Present only on success
-
 
 class RegisterResponse(BaseModel):
     """Returned after successful registration or OTP resend."""
@@ -247,13 +213,8 @@ class VerifyLoginResponse(BaseModel):
     message: str = "Login successful."
     access_token: str
     refresh_token: str
-    access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
-
-
-
 
 
 
