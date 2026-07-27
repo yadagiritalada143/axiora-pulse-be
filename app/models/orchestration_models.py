@@ -28,6 +28,7 @@ class IdeaInput(BaseModel):
     idea_title: str = Field(..., min_length=3, description="Short name of the idea")
     idea_description: str = Field(..., min_length=10, description="Full description of the idea")
     problem_statement: str = Field(..., min_length=10, description="The core problem being solved")
+    founder_evidence: Optional[str] = Field(default=None, description="Stated evidence, prior experience, or existing data")
 
 
 class OrchestrationRequest(BaseModel):

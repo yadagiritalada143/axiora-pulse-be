@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 # ── Scoring weights ────────────────────────────────────────────────────────────
 # Must sum to 1.0.  Update here when a new agent becomes active.
 AGENT_WEIGHTS: dict[str, float] = {
-    "idea_validation_agent": 1.0,
-    # Phase 2 (uncomment and re-normalise):
-    # "market_research_agent":      0.20,
+    "idea_validation_agent": 0.5,
+    "market_research_agent": 0.5,
+    # Phase 2 (uncomment and re-normalise when implemented):
     # "survey_intelligence_agent":  0.25,
     # "gtm_strategy_agent":         0.15,
     # "financial_readiness_agent":  0.20,
@@ -173,21 +173,25 @@ class ValidationEngine:
         idea_data: dict = agent_results.get("idea_validation_agent", {}).get("data", {})
         if idea_data:
             # Strengths — use problem summary if clarity is decent
-            score = idea_data.get("idea_clarity_score", 0)
-            problem = idea_data.get("problem_summary", "")
-            customer = idea_data.get("customer_hypothesis", "")
+            score = idea_data.get("problem_clarity_score")
+            if score is None:
+                score = idea_data.get("idea_clarity_score", 0)
+
+            problem = idea_data.get("problem_statement_summary") or idea_data.get("problem_summary", "")
+            customer = idea_data.get("who_and_frequency") or idea_data.get("customer_hypothesis", "")
 
             if score >= 60 and problem:
                 strengths.append(f"Clear problem identified: {problem}")
             if score >= 60 and customer:
-                strengths.append(f"Customer hypothesis defined: {customer}")
+                strengths.append(f"Customer cohort defined: {customer}")
 
             # Risks
             for flag in idea_data.get("red_flags", []):
                 risks.append(str(flag))
 
             # Assumptions
-            for assumption in idea_data.get("key_assumptions", []):
+            assumptions_list = idea_data.get("assumption_list") or idea_data.get("key_assumptions", [])
+            for assumption in assumptions_list:
                 assumptions.append(str(assumption))
 
             # Recommendation from agent
@@ -196,6 +200,41 @@ class ValidationEngine:
                 recommendations.append(
                     f"Idea validation analysis suggests: {agent_rec.replace('_', ' ').title()}"
                 )
+
+        # ── market_research_agent ─────────────────────────────────────────────
+        market_data: dict = agent_results.get("market_research_agent", {}).get("data", {})
+        if market_data:
+            # ICP & Persona strengths
+            icp = market_data.get("primary_icp_summary", "")
+            if icp:
+                strengths.append(f"Primary ICP: {icp}")
+            persona = market_data.get("persona_summary", "")
+            if persona:
+                strengths.append(f"Persona: {persona}")
+
+            # Audience narrowness
+            narrowness = market_data.get("audience_narrowness_score")
+            if narrowness is not None:
+                if narrowness >= 61:
+                    strengths.append(f"Audience Narrowness Score: {narrowness}/100 — well-defined target segment.")
+                elif narrowness <= 30:
+                    risks.append(f"Audience Narrowness Score: {narrowness}/100 — audience is too broad. Narrow to a specific segment.")
+
+            # Opportunity signals → strengths
+            for signal in market_data.get("opportunity_signals", []):
+                strengths.append(f"Market Signal: {signal}")
+
+            # Market & audience red flags → risks
+            for flag in market_data.get("red_flags", []):
+                risks.append(str(flag))
+            for risk in market_data.get("risk_signals", []):
+                risks.append(str(risk))
+
+            # Target customer segments → strengths
+            segments = market_data.get("target_customer_segments", [])
+            if segments:
+                strengths.append(f"Target Customer Segment: {segments[0]}")
+
 
         # Add next-step recommendations based on verdict
         if verdict == ValidationVerdict.BUILD:

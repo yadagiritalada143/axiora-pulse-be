@@ -17,23 +17,34 @@ logger = logging.getLogger(__name__)
 
 class OpenAIProvider(LLMGateway):
     def __init__(self):
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
+        openai_api_key = os.getenv("OPENAI_API_KEY", "ollama")
+        base_url = os.getenv("OPENAI_BASE_URL")
+        if not openai_api_key and not base_url:
             raise ValueError(
                 "OPENAI_API_KEY is not set. Add it to your .env file."
             )
-        self.client = AsyncOpenAI(
-            api_key=openai_api_key,
-            timeout=int(os.getenv("OPENAI_TIMEOUT")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES")),
-        )
+        
+        timeout_str = os.getenv("OPENAI_TIMEOUT", "60").strip()
+        retries_str = os.getenv("OPENAI_MAX_RETRIES", "2").strip()
+        timeout = int(timeout_str) if timeout_str.isdigit() else 60
+        max_retries = int(retries_str) if retries_str.isdigit() else 2
+
+        client_kwargs = {
+            "api_key": openai_api_key or "ollama",
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        self.client = AsyncOpenAI(**client_kwargs)
         self._default_model = (
             os.getenv("OPENAI_MODEL")
             or os.getenv("DEFAULT_MODEL")
             or "gpt-4o-mini"
         )
-        # Strip any HuggingFace-style model names that may have slipped through DEFAULT_MODEL
-        if "/" in self._default_model and not self._default_model.startswith("ft:"):
+        # Strip any HuggingFace-style model names that may have slipped through DEFAULT_MODEL (only if base_url is not set)
+        if not base_url and "/" in self._default_model and not self._default_model.startswith("ft:"):
             self._default_model = "gpt-4o-mini"
 
     def get_provider_name(self) -> str:

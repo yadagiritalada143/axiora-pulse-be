@@ -15,6 +15,7 @@ from app.core.dependencies import get_current_user
 from app.db.database import get_db
 from app.db.models import User
 from app.models.auth_models import (
+    AdminLoginResponse,
     LoginSuccessResponse,
     RegisterResponse,
     ResendOTPRequest,
@@ -148,6 +149,28 @@ async def verify_login(
     db: AsyncSession = Depends(get_db),
 ) -> VerifyLoginResponse:
     return await auth_service.verify_login(payload, db)
+
+
+# ── Admin Login ───────────────────────────────────────────────────────────────
+
+@router.post(
+    "/admin/login",
+    response_model=AdminLoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Admin login endpoint",
+    description=(
+        "Authenticates admin with email and password. "
+        "Returns access/refresh tokens, role='admin', and permitted actions=['dashboard']."
+    ),
+)
+@limiter.limit("5/minute")
+async def admin_login(
+    request: Request,
+    payload: UserLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AdminLoginResponse:
+    return await auth_service.admin_login(payload, db)
+
 
 
 

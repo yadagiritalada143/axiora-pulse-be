@@ -1,0 +1,27 @@
+# /opt/axiora/Caddyfile
+# Serves the built SPA and proxies /api to the backend container.
+#
+# Caddy obtains and renews a Let's Encrypt certificate for this hostname
+# automatically, and redirects HTTP to HTTPS. Ports 80 and 443 must both be
+# open: 80 is used for the ACME challenge and the redirect.
+#
+# Do not deploy this until qa.axiorapulse.com resolves to the server's IP —
+# failed certificate requests count against a 5-per-hour rate limit.
+
+qa.axiorapulse.com {
+	log {
+		output stdout
+		format console
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv
+		encode gzip
+		try_files {path} /index.html
+		file_server
+	}
+}
