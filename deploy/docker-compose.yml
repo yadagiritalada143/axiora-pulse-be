@@ -1,0 +1,33 @@
+# /opt/axiora/docker-compose.yml
+
+services:
+  api:
+    build: ./axiora-pulse-be
+    env_file: .env
+    restart: unless-stopped
+    expose: ["8000"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on: [api]
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./dist:/srv:ro
+      # Persists issued certificates across container recreation. Without this,
+      # every `up --force-recreate` re-requests a cert and burns rate limit.
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:

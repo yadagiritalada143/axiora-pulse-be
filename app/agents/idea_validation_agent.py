@@ -1,12 +1,14 @@
 """
-Idea Validation Agent
+Idea Validation Agent — Analysis 1 (Problem Analysis)
 ──────────────────────────────────────────────────────────────────────────────
-Evaluates whether a founder's idea is clear, solves a real problem,
-has a defined customer, and is ready for structured validation.
+Evaluates whether a founder's idea is anchored in a real, evidenced, and
+sufficiently painful problem — not an assumed or solution-shaped concept.
 
 Skill      : idea_validation_skill
-Score      : idea_clarity_score (0–100)
-Outputs    : problem_summary, customer_hypothesis, key_assumptions,
+Score      : problem_clarity_score (0–100)
+Outputs    : problem_clarity_score, falsifiable_problem_sentence,
+             problem_statement_summary, pain_type_classification,
+             who_and_frequency, current_workarounds, assumption_list,
              red_flags, initial_recommendation, confidence
 """
 import json
@@ -28,9 +30,17 @@ VALID_RECOMMENDATIONS = {
     "pivot",
     "hold",
 }
+
+VALID_PAIN_TYPES = {
+    "painkiller": "Painkiller",
+    "vitamin": "Vitamin",
+    "unclear": "Unclear",
+}
+
+
 class IdeaValidationAgent(BaseAgent):
     """
-    First agent in the Phase 1 pipeline.
+    First agent in the Phase 1 pipeline (Analysis 1: Problem Analysis).
     Uses the idea_validation_skill to score and analyse the founder's idea.
     """
     agent_name = "idea_validation_agent"
@@ -45,20 +55,27 @@ class IdeaValidationAgent(BaseAgent):
         if not self.skill:
             raise ValueError("Skill not loaded for IdeaValidationAgent")
 
+        evidence = (
+            agent_input.founder_evidence
+            or agent_input.additional_context.get("founder_evidence")
+            or "No explicit evidence provided beyond founder assertion."
+        )
+
         return self.skill.build_prompt(
             idea_title=agent_input.idea_title,
             idea_description=agent_input.idea_description,
             problem_statement=agent_input.problem_statement,
-            target_customer=agent_input.target_customer,
             industry=agent_input.industry,
+            geography=agent_input.geography,
             founder_validation_goal=agent_input.founder_validation_goal,
+            founder_evidence=evidence,
         )
 
     # ── Output parser ──────────────────────────────────────────────────────────
 
     def _parse_output(self, raw_content: str) -> dict[str, Any]:
         """
-        Parse the LLM response into the idea validation schema.
+        Parse the LLM response into the Analysis 1 problem analysis schema.
         Applies defaults for missing fields and validates value ranges.
         """
         parsed: dict[str, Any] = {}
@@ -81,11 +98,41 @@ class IdeaValidationAgent(BaseAgent):
                 )
                 raise json.JSONDecodeError("No valid JSON found", raw_content, 0)
 
-        # ── Apply defaults for missing fields ──────────────────────────────────
-        parsed.setdefault("idea_clarity_score", 40)
-        parsed.setdefault("problem_summary", "Unable to generate a problem summary.")
-        parsed.setdefault("customer_hypothesis", "Not specified — more detail needed.")
-        parsed.setdefault("key_assumptions", ["Customers have this problem", "They will pay for a solution"])
+        # ── Normalize alias fields for score & summaries ───────────────────────
+        score_val = parsed.get("problem_clarity_score")
+        if score_val is None:
+            score_val = parsed.get("idea_clarity_score", 40)
+
+        summary_val = (
+            parsed.get("problem_statement_summary")
+            or parsed.get("problem_summary")
+            or "Unable to generate a problem statement summary."
+        )
+        assumptions_val = (
+            parsed.get("assumption_list")
+            or parsed.get("key_assumptions")
+            or ["Customers have this problem", "They will pay for a solution"]
+        )
+
+        who_val = (
+            parsed.get("who_and_frequency")
+            or parsed.get("customer_hypothesis")
+            or "Not specified — frequency and user cohort need clarification."
+        )
+        parsed["who_and_frequency"] = who_val
+        parsed["customer_hypothesis"] = who_val
+
+        parsed["problem_clarity_score"] = score_val
+        parsed["idea_clarity_score"] = score_val
+        parsed["problem_statement_summary"] = summary_val
+        parsed["problem_summary"] = summary_val
+        parsed["assumption_list"] = assumptions_val if isinstance(assumptions_val, list) else [str(assumptions_val)]
+        parsed["key_assumptions"] = parsed["assumption_list"]
+
+        # ── Apply defaults for Analysis 1 fields ───────────────────────────────
+        parsed.setdefault("falsifiable_problem_sentence", "Problem statement requires further definition.")
+        parsed.setdefault("pain_type_classification", "Unclear")
+        parsed.setdefault("current_workarounds", "Not specified — existing substitutes need investigation.")
         parsed.setdefault("red_flags", [])
         parsed.setdefault("initial_recommendation", "needs_clarification")
         parsed.setdefault("confidence", 0.4)
@@ -96,14 +143,21 @@ class IdeaValidationAgent(BaseAgent):
 
         # ── Validate and clamp numeric fields ──────────────────────────────────
         try:
-            parsed["idea_clarity_score"] = max(0, min(100, int(parsed["idea_clarity_score"])))
+            clamped_score = max(0, min(100, int(parsed["problem_clarity_score"])))
+            parsed["problem_clarity_score"] = clamped_score
+            parsed["idea_clarity_score"] = clamped_score
         except (ValueError, TypeError):
+            parsed["problem_clarity_score"] = 40
             parsed["idea_clarity_score"] = 40
 
         try:
             parsed["confidence"] = max(0.0, min(1.0, float(parsed["confidence"])))
         except (ValueError, TypeError):
             parsed["confidence"] = 0.4
+
+        # ── Validate pain type enum ─────────────────────────────────────────────
+        ptype = str(parsed.get("pain_type_classification", "")).lower().strip()
+        parsed["pain_type_classification"] = VALID_PAIN_TYPES.get(ptype, "Unclear")
 
         # ── Validate recommendation enum ───────────────────────────────────────
         rec = str(parsed.get("initial_recommendation", "")).lower().replace(" ", "_")
@@ -113,8 +167,8 @@ class IdeaValidationAgent(BaseAgent):
         else:
             parsed["initial_recommendation"] = rec
 
-        # ── Ensure lists are actually lists ────────────────────────────────────
-        for field in ("key_assumptions", "red_flags"):
+        # ── Ensure list fields are arrays of strings ───────────────────────────
+        for field in ("assumption_list", "key_assumptions", "red_flags"):
             if not isinstance(parsed.get(field), list):
                 val = parsed.get(field, "")
                 parsed[field] = [str(val)] if val else []
@@ -124,4 +178,7 @@ class IdeaValidationAgent(BaseAgent):
     # ── Score extractor ────────────────────────────────────────────────────────
 
     def _extract_score(self, parsed_output: dict[str, Any]) -> float:
-        return float(parsed_output.get("idea_clarity_score", 40))
+        score_val = parsed_output.get("problem_clarity_score")
+        if score_val is None:
+            score_val = parsed_output.get("idea_clarity_score", 40)
+        return float(score_val)

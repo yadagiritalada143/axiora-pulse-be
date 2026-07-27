@@ -52,7 +52,8 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
 
 from app.core.logging import setup_logging
 from app.core.limiter import limiter
-from app.db.database import run_migrations
+from app.db.database import run_migrations, AsyncSessionLocal
+from app.services.auth_service import seed_admin_user
 from app.skills.skill_registry import skill_registry
 
 # ── Logging must be configured before any other imports ───────────────────────
@@ -74,6 +75,10 @@ async def lifespan(app: FastAPI):
 
     # Apply any pending DB migrations (Alembic upgrade head)
     await run_migrations()
+
+    # Seed default admin user account
+    async with AsyncSessionLocal() as session:
+        await seed_admin_user(session)
 
     # Load all skill YAML files into the registry
     skill_registry.load_all()
@@ -125,10 +130,6 @@ def _validate_security_config() -> None:
 # Tags listed in alphabetical order — FastAPI preserves this order in Swagger UI.
 _OPENAPI_TAGS = [
     {
-        "name": "AI Mentor",
-        "description": "Founder-facing AI Mentor: chat.",
-    },
-    {
         "name": "Auth",
         "description": "User registration and login. Issues JWT Bearer tokens for authenticated access.",
     },
@@ -146,7 +147,11 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "Workspaces",
-        "description": "Workspace management — create, list, retrieve, and delete user workspaces.",
+        "description": (
+            "Workspace management and all AI Mentor sub-resources. "
+            "Create, list, retrieve, delete workspaces, chat with AI Mentor, "
+            "retrieve validation state, reset conversations, and download agent reports."
+        ),
     },
 ]
 
@@ -187,12 +192,10 @@ app.add_middleware(
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 from app.api.v1 import orchestration as orchestration_router
-from app.api.v1 import mentor as mentor_router
 from app.api.v1 import auth as auth_router
 from app.api.v1 import workspace as workspace_router
 
 app.include_router(orchestration_router.router, prefix="/api/v1")
-app.include_router(mentor_router.router, prefix="/api/v1")
 app.include_router(auth_router.router, prefix="/api/v1")
 app.include_router(workspace_router.router, prefix="/api/v1")
 
@@ -207,8 +210,13 @@ async def root() -> dict:
         "docs": "/docs",
         "health": "/health",
         "endpoints": {
-            "validate_idea": "POST /api/v1/orchestration/run",
-            "mentor_chat":   "POST /api/v1/mentor/chat",
+            "workspaces":         "POST   /api/v1/workspaces",
+            "workspace_chat":     "POST   /api/v1/workspaces/{id}/chat",
+            "workspace_state":    "GET    /api/v1/workspaces/{id}/state",
+            "workspace_reset":    "POST   /api/v1/workspaces/{id}/reset",
+            "workspace_report":   "GET    /api/v1/workspaces/{id}/reports/{agent_name}",
+            "workspace_export":   "POST   /api/v1/workspaces/{id}/reports/export",
+            "validate_idea":      "POST   /api/v1/orchestration/run",
         },
     }
 

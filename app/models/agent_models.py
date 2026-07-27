@@ -18,10 +18,12 @@ class AgentInput(BaseModel):
     idea_title: str
     idea_description: str
     problem_statement: str
-    target_customer: str
+    target_customer: Optional[str] = None
     industry: str = "general"
+    business_type: str = "Unclear"          # B2B | B2C | B2B2C | Unclear
     founder_validation_goal: str = "validate my idea"
     geography: str = "global"
+    founder_evidence: Optional[str] = None
     additional_context: dict[str, Any] = Field(default_factory=dict)
 
 

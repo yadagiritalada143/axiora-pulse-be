@@ -39,10 +39,11 @@ from app.orchestration.validation_engine import validation_engine
 # Import each agent class and register it here.
 # Phase 2+: add market_research_agent, survey_intelligence_agent, etc.
 from app.agents.idea_validation_agent import IdeaValidationAgent
+from app.agents.market_research_agent import MarketResearchAgent
 
 AGENT_REGISTRY: dict[str, type] = {
     "idea_validation_agent": IdeaValidationAgent,
-    # "market_research_agent":     MarketResearchAgent,     # Phase 2
+    "market_research_agent": MarketResearchAgent,
     # "survey_intelligence_agent": SurveyIntelligenceAgent, # Phase 2
     # "gtm_strategy_agent":        GTMStrategyAgent,        # Phase 2
     # "financial_readiness_agent": FinancialReadinessAgent, # Phase 2
@@ -107,6 +108,8 @@ class Orchestrator:
                 agent = agent_class(llm_gateway)
                 output = await agent.run(agent_input)
                 agent_outputs.append(output)
+                if output.data:
+                    agent_input.additional_context.update(output.data)
                 logger.info(
                     f"[Orchestrator] {agent_name} → status={output.status} "
                     f"score={output.score}"
@@ -146,10 +149,7 @@ class Orchestrator:
                     idea_title=agent_input.idea_title,
                     idea_description=agent_input.idea_description,
                     problem_statement=agent_input.problem_statement,
-                    target_customer=agent_input.target_customer,
-                    industry=agent_input.industry,
-                    founder_validation_goal=agent_input.founder_validation_goal,
-                    geography=agent_input.geography,
+                    founder_evidence=agent_input.founder_evidence,
                 ),
             )
 

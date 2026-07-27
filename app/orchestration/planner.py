@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 WORKFLOW_AGENT_MAP: dict[WorkflowType, list[str]] = {
     WorkflowType.IDEA_VALIDATION: [
         "idea_validation_agent",
+        "market_research_agent",
         # Phase 2 — uncomment when implemented:
-        # "market_research_agent",
         # "survey_intelligence_agent",
         # "gtm_strategy_agent",
         # "financial_readiness_agent",

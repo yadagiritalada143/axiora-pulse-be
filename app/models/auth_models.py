@@ -9,7 +9,7 @@ Endpoints covered:
   POST /resendOTP   → ResendOTPRequest     → RegisterResponse
   POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator
 
@@ -79,9 +79,12 @@ class RegisterResponse(BaseModel):
 
 class VerifyOTPResponse(BaseModel):
     """Returned after OTP verification attempt."""
-    status: str                     # "success" | "failed"
+    status: str                              # "success" | "failed"
     message: str
-    jwt: Optional[str] = None       # Present only on success
+    access_token: Optional[str] = None      # Present only on success
+    refresh_token: Optional[str] = None     # Present only on success
+    token_type: str = "bearer"
+    expires_in_minutes: Optional[int] = None
 
 
 class LoginSuccessResponse(BaseModel):
@@ -215,6 +218,21 @@ class VerifyLoginResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+    role: str = "user"
+    actions: List[str] = Field(default_factory=list)
+
+
+class AdminLoginResponse(BaseModel):
+    """Returned on successful admin login."""
+    status: str = "success"
+    message: str = "Admin login successful."
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in_minutes: int
+    role: str = "admin"
+    actions: List[str] = Field(default_factory=lambda: ["dashboard"])
+
 
 
 

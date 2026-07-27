@@ -40,6 +40,7 @@ load_dotenv()
 _ACCESS_TOKEN_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 from app.db.models import User
 from app.models.auth_models import (
+    AdminLoginResponse,
     LoginSuccessResponse,
     RegisterResponse,
     ResendOTPRequest,
@@ -62,6 +63,33 @@ from app.models.auth_models import (
 from app.services.otp_dispatcher import dispatch_otp, dispatch_password_reset_otp, dispatch_login_otp
 
 logger = logging.getLogger(__name__)
+
+
+async def seed_admin_user(db: AsyncSession) -> None:
+    """Ensure the default admin user exists with credentials admin@axiorapulse.com / Test@12345."""
+    admin_email = "admin@axiorapulse.com"
+    result = await db.execute(select(User).where(User.username == admin_email))
+    admin_user = result.scalar_one_or_none()
+
+    hashed_pw = await hash_password_async("Test@12345")
+
+    if admin_user is None:
+        admin_user = User(
+            role="admin",
+            username=admin_email,
+            password=hashed_pw,
+            register_mfa=True,
+        )
+        db.add(admin_user)
+        await db.commit()
+        logger.info("Created default admin user: %s", admin_email)
+    else:
+        admin_user.role = "admin"
+        admin_user.password = hashed_pw
+        admin_user.register_mfa = True
+        await db.commit()
+        logger.info("Ensured admin user credentials up to date for: %s", admin_email)
+
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -193,19 +221,24 @@ class AuthService:
                 )
             return VerifyOTPResponse(status="failed", message="OTP is wrong")
 
-        # ── Success — mark MFA complete, clear OTP, issue JWT ─────────────────
+        # ── Success — mark MFA complete, clear OTP, issue token pair ─────────
         user.register_mfa = True
         user.register_otp = None
         user.register_otp_expiry = None
         user.register_otp_attempts = 0
 
-        token = create_access_token(data={"sub": str(user.id), "username": user.username})
+        token_data = {"sub": str(user.id), "username": user.username}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
         logger.info("OTP verified for user id=%s (%s)", user.id, user.username)
 
         return VerifyOTPResponse(
             status="success",
             message="OTP Validated Successfully !",
-            jwt=token,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in_minutes=_ACCESS_TOKEN_MINS,
         )
 
     # ── Resend OTP ─────────────────────────────────────────────────────────────
@@ -356,15 +389,65 @@ class AuthService:
         user.login_otp_expiry = None
 
         # Generate tokens
-        access_token = create_access_token(data={"sub": str(user.id), "username": user.username})
-        refresh_token = create_refresh_token(data={"sub": str(user.id), "username": user.username})
+        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
 
         logger.info("Login OTP successfully verified for user id=%s. Access and Refresh tokens issued.", user.id)
 
+        actions = ["dashboard"] if user.role == "admin" else []
         return VerifyLoginResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in_minutes=_ACCESS_TOKEN_MINS,
+            role=user.role,
+            actions=actions,
+        )
+
+    # ── Admin Login ────────────────────────────────────────────────────────────
+
+    async def admin_login(
+        self, request: UserLoginRequest, db: AsyncSession
+    ) -> AdminLoginResponse:
+        """Authenticate an admin user and issue access/refresh tokens directly.
+
+        Raises:
+            HTTPException 401 if credentials are invalid.
+            HTTPException 403 if user is not an admin.
+        """
+        username = request.username.lower().strip()
+        user = await _get_user_by_username(db, username)
+
+        if user is None or not await verify_password_async(request.password, user.password):
+            logger.warning("Failed admin login attempt for username: %s", username)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if user.role != "admin":
+            logger.warning("Non-admin user attempted admin login: %s", username)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. Admin privileges required.",
+            )
+
+        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
+
+        logger.info("Admin user logged in successfully: %s (id=%s)", user.username, user.id)
+
+        return AdminLoginResponse(
+            status="success",
+            message="Admin login successful.",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in_minutes=_ACCESS_TOKEN_MINS,
+            role="admin",
+            actions=["dashboard"],
         )
 
     # ── Forgot Password Request ───────────────────────────────────────────────

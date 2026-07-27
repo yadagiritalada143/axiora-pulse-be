@@ -1,7 +1,7 @@
 """
 app/services/workspace_service.py
 ────────────────────────────────────────────────────────────────────────────────
-Workspace service — all database operations for workspaces.
+Workspace service — all database operations & sub-resource handlers for workspaces.
 
 Operations:
   create_workspace()             → Persist a new workspace scoped to the current user.
@@ -9,21 +9,31 @@ Operations:
   get_workspace()                → Fetch a single workspace by ID (owner-enforced).
   get_workspaces_by_user_id()    → Fetch all workspaces for a given user_id (self-service enforced).
   delete_workspace()             → Hard-delete a workspace by ID (owner-enforced).
+  process_mentor_chat()          → Process AI Mentor message in a workspace (owner-enforced).
+  get_workspace_state()          → Fetch full workspace dialogue & validation state (owner-enforced).
+  reset_workspace_mentor()       → Reset mentor dialogue for a workspace (owner-enforced).
+  export_workspace_report()      → Export PDF/Doc report for a workspace (owner-enforced).
 """
 import logging
 from datetime import datetime, timezone
+from typing import Optional, Tuple
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User, Workspace
 from app.models.workspace_models import (
     CreateWorkspaceRequest,
-    DeleteWorkspaceResponse,
+    UpdateWorkspaceRequest,
+    WorkspaceChatRequest,
+    WorkspaceChatResponse,
     WorkspaceListResponse,
     WorkspaceResponse,
+    WorkspaceStateResponse,
 )
+from app.services.mentor_service import mentor_service, WorkspaceMentorState
+from app.services.report_service import report_service
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +56,17 @@ class WorkspaceService:
             user_id=current_user.id,
             name=payload.name.strip(),
             description=payload.description.strip() if payload.description else None,
+            state="GATHERING_INFO",
+            idea={
+                "idea_title": None,
+                "idea_description": None,
+                "problem_statement": None,
+                "industry": "general",
+                "founder_validation_goal": "validate my idea",
+                "geography": "global"
+            },
+            conversation_history=[],
+            validation_result=None,
             created_at=now,
             updated_at=now,
         )
@@ -92,6 +113,31 @@ class WorkspaceService:
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
         return WorkspaceResponse.model_validate(workspace)
 
+    # ── Update ────────────────────────────────────────────────────────────────
+
+    async def update_workspace(
+        self,
+        workspace_id: int,
+        payload: UpdateWorkspaceRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> WorkspaceResponse:
+        """Update name and/or description of an owned workspace — 404/403 enforced."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+
+        workspace.name = payload.name.strip()
+        workspace.description = payload.description.strip() if payload.description else None
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        await db.refresh(workspace)
+
+        logger.info(
+            "Workspace updated: id=%s user_id=%s",
+            workspace.id, current_user.id,
+        )
+        return WorkspaceResponse.model_validate(workspace)
+
     # ── Get by User ID ────────────────────────────────────────────────────────
 
     async def get_workspaces_by_user_id(
@@ -100,13 +146,7 @@ class WorkspaceService:
         current_user: User,
         db: AsyncSession,
     ) -> WorkspaceListResponse:
-        """Return all workspaces for a given user_id.
-
-        Self-service only — users can only query their own user_id.
-
-        Raises:
-            HTTP 403 — requested user_id does not match the authenticated user.
-        """
+        """Return all workspaces for a given user_id."""
         if user_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -120,11 +160,6 @@ class WorkspaceService:
         )
         workspaces = result.scalars().all()
 
-        logger.info(
-            "Fetched %d workspace(s) for user_id=%s",
-            len(workspaces), user_id,
-        )
-
         return WorkspaceListResponse(
             total=len(workspaces),
             workspaces=[WorkspaceResponse.model_validate(w) for w in workspaces],
@@ -137,7 +172,7 @@ class WorkspaceService:
         workspace_id: int,
         current_user: User,
         db: AsyncSession,
-    ) -> DeleteWorkspaceResponse:
+    ) -> None:
         """Hard-delete a workspace — 404 if not found, 403 if not owner."""
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
 
@@ -147,10 +182,134 @@ class WorkspaceService:
             workspace_id, current_user.id,
         )
 
-        return DeleteWorkspaceResponse(
-            status="success",
-            message="Workspace deleted successfully.",
-            workspace_id=workspace_id,
+    # ── Mentor Chat Sub-resource ──────────────────────────────────────────────
+
+    async def process_mentor_chat(
+        self,
+        workspace_id: int,
+        payload: WorkspaceChatRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> WorkspaceChatResponse:
+        """Process AI Mentor message inside a workspace."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+
+        ws_state = WorkspaceMentorState(
+            workspace_id=str(workspace.id),
+            state=workspace.state or "GATHERING_INFO",
+            idea=workspace.idea or {},
+            conversation_history=workspace.conversation_history or [],
+            validation_result=workspace.validation_result
+        )
+
+        updated_state = await mentor_service.process_message(ws_state, payload.message)
+
+        # Save back to database
+        workspace.state = updated_state.state
+        workspace.idea = updated_state.idea
+        workspace.conversation_history = list(updated_state.conversation_history)
+        workspace.validation_result = updated_state.validation_result
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        await db.refresh(workspace)
+
+        assistant_reply = "I'm listening. Tell me more!"
+        if updated_state.conversation_history:
+            for msg in reversed(updated_state.conversation_history):
+                if msg.get("role") == "assistant":
+                    assistant_reply = msg.get("content", "")
+                    break
+
+        return WorkspaceChatResponse(
+            reply=assistant_reply,
+            workspace_id=workspace.id,
+            state=workspace.state,
+            idea=workspace.idea,
+            validation_result=workspace.validation_result
+        )
+
+    # ── Workspace State Sub-resource ──────────────────────────────────────────
+
+    async def get_workspace_state(
+        self,
+        workspace_id: int,
+        current_user: User,
+        db: AsyncSession,
+    ) -> WorkspaceStateResponse:
+        """Fetch complete workspace dialogue, idea context & validation result."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+        return WorkspaceStateResponse.model_validate(workspace)
+
+    # ── Reset Mentor Sub-resource ─────────────────────────────────────────────
+
+    async def reset_workspace_mentor(
+        self,
+        workspace_id: int,
+        current_user: User,
+        db: AsyncSession,
+    ) -> WorkspaceStateResponse:
+        """Reset conversation dialogue state for a workspace."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+
+        default_idea = {
+            "idea_title": None,
+            "idea_description": None,
+            "problem_statement": None,
+            "industry": "general",
+            "founder_validation_goal": "validate my idea",
+            "geography": "global"
+        }
+
+        initial_greeting = (
+            "Hello! I'm your AI Mentor at Axiora Pulse. "
+            "Tell me about your startup idea and the problem you're solving — "
+            "and together we'll validate its potential!"
+        )
+
+        workspace.state = "GATHERING_INFO"
+        workspace.idea = default_idea
+        workspace.conversation_history = [{"role": "assistant", "content": initial_greeting}]
+        workspace.validation_result = None
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        await db.refresh(workspace)
+
+        return WorkspaceStateResponse.model_validate(workspace)
+
+    # ── Report Export Sub-resource ────────────────────────────────────────────
+
+    async def export_workspace_report(
+        self,
+        workspace_id: int,
+        agent_name: str,
+        export_format: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Response:
+        """Generate and download PDF or Doc report for a workspace."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+
+        if not workspace.validation_result:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace {workspace_id} has not been validated yet. Please run validation first."
+            )
+
+        idea_info = workspace.idea or {"idea_title": workspace.name}
+
+        file_bytes, media_type, filename = report_service.generate_report(
+            agent_name=agent_name,
+            validation_result=workspace.validation_result,
+            idea_info=idea_info,
+            export_format=export_format
+        )
+
+        return Response(
+            content=file_bytes,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
     # ── Private helpers ───────────────────────────────────────────────────────
@@ -161,12 +320,7 @@ class WorkspaceService:
         current_user: User,
         db: AsyncSession,
     ) -> Workspace:
-        """Fetch a workspace and enforce ownership.
-
-        Raises:
-            HTTP 404 — workspace does not exist.
-            HTTP 403 — workspace exists but belongs to another user.
-        """
+        """Fetch a workspace and enforce ownership."""
         result = await db.execute(
             select(Workspace).where(Workspace.id == workspace_id)
         )

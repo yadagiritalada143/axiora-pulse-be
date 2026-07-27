@@ -12,17 +12,15 @@ from app.skills.skill_registry import skill_registry
 
 logger = logging.getLogger(__name__)
 
-# ── Session Models ─────────────────────────────────────────────────────────────
+# ── Workspace State Models ───────────────────────────────────────────────────
 
-class MentorSession(BaseModel):
-    session_id: str
+class WorkspaceMentorState(BaseModel):
     workspace_id: str
     state: str = "GATHERING_INFO"  # GATHERING_INFO | READY_TO_VALIDATE | VALIDATING | VALIDATED
     idea: Dict[str, Any] = Field(default_factory=lambda: {
         "idea_title": None,
         "idea_description": None,
         "problem_statement": None,
-        "target_customer": None,
         "industry": "general",
         "founder_validation_goal": "validate my idea",
         "geography": "global"
@@ -31,6 +29,8 @@ class MentorSession(BaseModel):
     validation_result: Optional[Dict[str, Any]] = None
 
 
+# Alias for backward compatibility
+MentorSession = WorkspaceMentorState
 
 
 # ── LLM Prompts ────────────────────────────────────────────────────────────────
@@ -43,7 +43,6 @@ Return ONLY a raw JSON object containing these keys:
 - idea_title: A short, catchy name/title for the venture (string or null)
 - idea_description: Clear description of what the venture does (string or null)
 - problem_statement: The specific customer problem/pain point solved (string or null)
-- target_customer: Who suffers from this pain (string or null)
 - industry: Sector or industry (string, default "general")
 - geography: Target market region (string, default "global")
 - founder_validation_goal: What the founder wants to learn from validation (string, default "validate my idea")
@@ -54,14 +53,15 @@ Guidelines:
 3. Return raw JSON ONLY. No markdown formatting like ```json ... ```. No extra text.
 """
 
-# ── Dynamic session state block (appended to skill knowledge base) ─────────────
+# ── Dynamic workspace state block (appended to skill knowledge base) ─────────────
 
-_SESSION_STATE_TEMPLATE = """
+_WORKSPACE_STATE_TEMPLATE = """
 
 ══════════════════════════════════════════════════════
-CURRENT SESSION CONTEXT
+CURRENT WORKSPACE CONTEXT
 ══════════════════════════════════════════════════════
 
+Workspace ID: {workspace_id}
 Current Workflow State: {state}
 Extracted Idea details: {idea_json}
 Missing required fields to run validation: {missing_fields}
@@ -92,6 +92,7 @@ questioning style, devil's advocate protocol, and all guardrails.
 
 
 def _build_mentor_system_prompt(
+    workspace_id: str,
     state: str,
     idea_json: str,
     missing_fields: str,
@@ -99,7 +100,7 @@ def _build_mentor_system_prompt(
     validation_verdict: str = "N/A",
 ) -> str:
     """Build the full mentor system prompt by combining the core mentor specification,
-    the specific idea validation mentor subpart, and the dynamic session state."""
+    the specific idea validation mentor subpart, and the dynamic workspace state."""
     core_skill = skill_registry.get("ai_mentor_core_skill")
     val_skill = skill_registry.get("ai_idea_validation_mentor_skill")
 
@@ -124,8 +125,9 @@ def _build_mentor_system_prompt(
     else:
         knowledge_base = "\n\n".join(parts)
 
-    # Append the dynamic session context
-    session_block = _SESSION_STATE_TEMPLATE.format(
+    # Append the dynamic workspace context
+    workspace_block = _WORKSPACE_STATE_TEMPLATE.format(
+        workspace_id=workspace_id,
         state=state,
         idea_json=idea_json,
         missing_fields=missing_fields,
@@ -133,13 +135,13 @@ def _build_mentor_system_prompt(
         validation_verdict=validation_verdict,
     )
 
-    return knowledge_base + session_block
+    return knowledge_base + workspace_block
 
 
 # ── Service Implementation ─────────────────────────────────────────────────────
 
 class MentorService:
-    """Manages the dialogue state and LLM extraction/generation loop."""
+    """Manages workspace-scoped dialogue state and LLM extraction/generation loop."""
 
     def __init__(self):
         self._llm = None  # Lazy-initialized on first use to avoid startup crashes
@@ -151,29 +153,29 @@ class MentorService:
             self._llm = get_llm_gateway()
         return self._llm
 
-    async def process_message(self, session: MentorSession, user_message: str) -> MentorSession:
+    async def process_message(self, state: WorkspaceMentorState, user_message: str) -> WorkspaceMentorState:
         # Add user message to history
-        session.conversation_history.append({"role": "user", "content": user_message})
+        state.conversation_history.append({"role": "user", "content": user_message})
         
         # Check for system trigger or manual validation command in text
         is_trigger_command = "[TRIGGER_VALIDATION]" in user_message or user_message.lower().strip() in (
             "run validation", "run validation analysis", "validate", "validate idea", "start validation"
         )
 
-        if is_trigger_command and session.state == "READY_TO_VALIDATE":
-            session.state = "VALIDATING"
-            logger.info(f"[MentorService] State GATHERING_INFO -> VALIDATING for session {session.session_id}")
+        if is_trigger_command and state.state == "READY_TO_VALIDATE":
+            state.state = "VALIDATING"
+            logger.info(f"[MentorService] State GATHERING_INFO -> VALIDATING for workspace {state.workspace_id}")
             
             try:
                 # Prepare and trigger orchestration
                 idea_input = IdeaInput(
-                    idea_title=session.idea.get("idea_title") or "Unnamed Venture",
-                    idea_description=session.idea.get("idea_description") or "No description provided.",
-                    problem_statement=session.idea.get("problem_statement") or "No problem statement.",
+                    idea_title=state.idea.get("idea_title") or "Unnamed Venture",
+                    idea_description=state.idea.get("idea_description") or "No description provided.",
+                    problem_statement=state.idea.get("problem_statement") or "No problem statement.",
                 )
 
                 request = OrchestrationRequest(
-                    workspace_id=session.workspace_id,
+                    workspace_id=state.workspace_id,
                     idea_id=f"idea-{uuid.uuid4().hex[:8]}",
                     workflow_type=WorkflowType.IDEA_VALIDATION,
                     idea=idea_input
@@ -181,40 +183,40 @@ class MentorService:
 
                 orchestrator_resp = await orchestrator.run(request)
                 if orchestrator_resp.status == "success" and orchestrator_resp.result:
-                    session.validation_result = orchestrator_resp.result.dict()
-                    session.state = "VALIDATED"
+                    state.validation_result = orchestrator_resp.result.dict()
+                    state.state = "VALIDATED"
                 else:
-                    session.state = "READY_TO_VALIDATE"
-                    session.conversation_history.append({
+                    state.state = "READY_TO_VALIDATE"
+                    state.conversation_history.append({
                         "role": "assistant",
                         "content": f"I tried to run the validation analysis, but the orchestrator returned an error: {orchestrator_resp.error or 'Unknown failure'}. Let's try again when you are ready."
                     })
-                    return session
+                    return state
 
             except Exception as e:
                 logger.error(f"[MentorService] Orchestration run crashed: {e}", exc_info=True)
-                session.state = "READY_TO_VALIDATE"
-                session.conversation_history.append({
+                state.state = "READY_TO_VALIDATE"
+                state.conversation_history.append({
                     "role": "assistant",
                     "content": "I encountered an unexpected error running the validation engine. Let's try triggering it again."
                 })
-                return session
+                return state
 
         # If we are gathering info, run the Information Extractor first
-        if session.state == "GATHERING_INFO":
-            await self._run_extraction(session)
+        if state.state == "GATHERING_INFO":
+            await self._run_extraction(state)
 
         # Generate conversational response
-        await self._generate_mentor_reply(session)
-        return session
+        await self._generate_mentor_reply(state)
+        return state
 
-    async def _run_extraction(self, session: MentorSession) -> None:
+    async def _run_extraction(self, state: WorkspaceMentorState) -> None:
         """Helper to scan conversation history and extract idea details."""
         history_str = ""
-        for msg in session.conversation_history[-6:]:  # focus on recent history for context
+        for msg in state.conversation_history[-6:]:  # focus on recent history for context
             history_str += f"{msg['role'].capitalize()}: {msg['content']}\n"
 
-        prompt = f"Existing Idea Context:\n{json.dumps(session.idea, indent=2)}\n\nConversation History:\n{history_str}\n"
+        prompt = f"Existing Idea Context:\n{json.dumps(state.idea, indent=2)}\n\nConversation History:\n{history_str}\n"
 
         try:
             req = LLMRequest(
@@ -229,39 +231,40 @@ class MentorService:
                 cleaned_content = self._clean_json_str(res.content)
                 parsed = json.loads(cleaned_content)
                 
-                # Merge parsed values back into session.idea (only non-null fields)
+                # Merge parsed values back into state.idea (only non-null fields)
                 for k, v in parsed.items():
                     if v is not None and v != "":
-                        session.idea[k] = v
+                        state.idea[k] = v
 
-                logger.info(f"[MentorService] Idea updated: {session.idea}")
+                logger.info(f"[MentorService] Workspace '{state.workspace_id}' Idea updated: {state.idea}")
 
                 # Programmatic check of required fields
-                required = ["idea_title", "idea_description", "problem_statement", "target_customer"]
-                missing = [f for f in required if not session.idea.get(f)]
+                required = ["idea_title", "idea_description", "problem_statement"]
+                missing = [f for f in required if not state.idea.get(f)]
                 if not missing:
-                    session.state = "READY_TO_VALIDATE"
-                    logger.info(f"[MentorService] All required fields satisfied! State -> READY_TO_VALIDATE")
+                    state.state = "READY_TO_VALIDATE"
+                    logger.info(f"[MentorService] All required fields satisfied for workspace '{state.workspace_id}'! State -> READY_TO_VALIDATE")
 
         except Exception as e:
             logger.warning(f"[MentorService] Extraction step failed: {e}. Continuing conversation without it.")
 
-    async def _generate_mentor_reply(self, session: MentorSession) -> None:
-        """Call LLM with current state to write assistant response."""
+    async def _generate_mentor_reply(self, state: WorkspaceMentorState) -> None:
+        """Call LLM with current workspace state to write assistant response."""
         # Find missing required fields
-        required = ["idea_title", "idea_description", "problem_statement", "target_customer"]
-        missing = [f.replace("_", " ").title() for f in required if not session.idea.get(f)]
+        required = ["idea_title", "idea_description", "problem_statement"]
+        missing = [f.replace("_", " ").title() for f in required if not state.idea.get(f)]
 
         # Get validation context if we just validated
         score = 0.0
         verdict = "N/A"
-        if session.state == "VALIDATED" and session.validation_result:
-            score = session.validation_result.get("validation_score", 0.0)
-            verdict = str(session.validation_result.get("verdict", "hold")).upper()
+        if state.state == "VALIDATED" and state.validation_result:
+            score = state.validation_result.get("validation_score", 0.0)
+            verdict = str(state.validation_result.get("verdict", "hold")).upper()
 
         sys_prompt = _build_mentor_system_prompt(
-            state=session.state,
-            idea_json=json.dumps(session.idea, indent=2),
+            workspace_id=state.workspace_id,
+            state=state.state,
+            idea_json=json.dumps(state.idea, indent=2),
             missing_fields=", ".join(missing) if missing else "None",
             validation_score=score,
             validation_verdict=verdict,
@@ -269,7 +272,7 @@ class MentorService:
 
         # Build prompt using chat messages
         user_prompt = "Generate the next mentor message. Here is the recent chat history:\n"
-        for msg in session.conversation_history[-10:]:
+        for msg in state.conversation_history[-10:]:
             user_prompt += f"{msg['role'].capitalize()}: {msg['content']}\n"
         user_prompt += "Assistant:"
 
@@ -285,15 +288,15 @@ class MentorService:
                 # Clean prefix "Assistant:" if model output it
                 if reply.startswith("Assistant:"):
                     reply = reply[len("Assistant:"):].strip()
-                session.conversation_history.append({"role": "assistant", "content": reply})
+                state.conversation_history.append({"role": "assistant", "content": reply})
             else:
-                session.conversation_history.append({
+                state.conversation_history.append({
                     "role": "assistant",
                     "content": "I'm here! Tell me more about your startup idea, and we can validate it together."
                 })
         except Exception as e:
             logger.error(f"[MentorService] Failed to generate mentor response: {e}")
-            session.conversation_history.append({
+            state.conversation_history.append({
                 "role": "assistant",
                 "content": "I'm having trouble connecting to my brain right now. Can you try again?"
             })
