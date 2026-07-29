@@ -67,7 +67,8 @@ class OpenAIProvider(LLMGateway):
             "temperature": request.temperature,
         }
 
-        if "gpt-5.4" in model or model.startswith("o1"):
+        # gpt-5.4-x and o1/o3 reasoning models use max_completion_tokens, not max_tokens
+        if model.startswith(("o1", "o3")) or "gpt-5.4" in model:
             kwargs["max_completion_tokens"] = request.max_tokens
         else:
             kwargs["max_tokens"] = request.max_tokens

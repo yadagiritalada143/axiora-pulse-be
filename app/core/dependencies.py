@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,13 +40,12 @@ _JWT_ALGORITHM  = os.getenv("JWT_ALGORITHM")
 
 logger = logging.getLogger(__name__)
 
-# FastAPI will extract the Bearer token from the Authorization header.
-# tokenUrl is the login endpoint — shown in Swagger UI.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+# HTTPBearer scheme for Swagger UI — displays `bearerAuth (http, Bearer)` dialog
+http_bearer = HTTPBearer(scheme_name="bearerAuth")
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    auth_credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Decode the access token and return the authenticated User.
@@ -64,6 +63,7 @@ async def get_current_user(
     )
 
     # ── Decode token ───────────────────────────────────────────────────────────
+    token = auth_credentials.credentials
     try:
         payload = jwt.decode(
             token,
