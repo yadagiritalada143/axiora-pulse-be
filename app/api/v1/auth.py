@@ -71,10 +71,10 @@ async def register(
     status_code=status.HTTP_200_OK,
     summary="Verify OTP and complete MFA",
     description=(
-        "Validates the 6-digit OTP submitted by the user. "
-        "On success: sets registerMFA=True and returns a signed JWT. "
-        "On failure: returns status='failed' with a descriptive message "
-        "so the client can keep the user on the MFA page."
+        "Validates the 6-digit OTP submitted by the user for either 'register' or 'login' flows. "
+        "Supports user identification via 'id' (int/str) or 'emailOrMobile' (str). "
+        "On success: completes MFA and returns signed access and refresh tokens. "
+        "On failure: returns status='failed' with a descriptive message."
     ),
 )
 @limiter.limit("5/minute")
@@ -94,9 +94,10 @@ async def verify_otp(
     status_code=status.HTTP_200_OK,
     summary="Resend OTP",
     description=(
-        "Generates a new 6-digit OTP and sends it to the registered email. "
-        "Invalidates the previous OTP. "
-        "Returns the same payload as /register so the client can stay on the MFA page."
+        "Generates a new 6-digit OTP and sends it via email/SMS. "
+        "Supports both 'register' and 'login' flows via the 'flow' parameter ('register' | 'login'). "
+        "Accepts user identification via 'id' (int/str) or 'emailOrMobile'/'email' (str). "
+        "Invalidates the previous OTP and dispatches a fresh code."
     ),
 )
 @limiter.limit("3/minute")
@@ -227,7 +228,8 @@ async def forgot_password_verify(
     description=(
         "Accepts the temporary reset token and the new password. "
         "Validates the token, hashes the new password, updates PostgreSQL, "
-        "and updates password_changed_at to revoke all existing access tokens."
+        "stamps password_changed_at to revoke all prior access tokens, "
+        "and returns a fresh access/refresh token pair for immediate login."
     ),
 )
 @limiter.limit("3/minute")

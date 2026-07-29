@@ -9,9 +9,9 @@ Endpoints covered:
   POST /resendOTP   → ResendOTPRequest     → RegisterResponse
   POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
-from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # ── Request Models ─────────────────────────────────────────────────────────────
@@ -57,15 +57,45 @@ class UserLoginRequest(BaseModel):
 
 class VerifyOTPRequest(BaseModel):
     """Payload for POST /api/v1/auth/verifyOTP."""
-    id: int
+    id: Optional[Union[int, str]] = None
+    emailOrMobile: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile")
+    )
     otp: int
-    flow: Literal["register"]   # extensible for future flows (e.g. "login")
+    flow: Literal["register", "login"] = "register"
+
+    @model_validator(mode="after")
+    def require_identifier(self) -> "VerifyOTPRequest":
+        """Ensure at least one valid identifier (non-zero id or emailOrMobile) is provided."""
+        id_valid = self.id is not None and str(self.id).strip() not in ("", "0")
+        email_valid = bool(self.emailOrMobile and self.emailOrMobile.strip())
+        if not id_valid and not email_valid:
+            raise ValueError(
+                "Provide either 'id' (non-zero user ID) or 'emailOrMobile' to identify the user."
+            )
+        return self
 
 
 class ResendOTPRequest(BaseModel):
     """Payload for POST /api/v1/auth/resendOTP."""
-    id: int
-    flow: Literal["register"]
+    id: Optional[Union[int, str]] = None
+    emailOrMobile: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile")
+    )
+    flow: Literal["register", "login"] = "register"
+
+    @model_validator(mode="after")
+    def require_identifier(self) -> "ResendOTPRequest":
+        """Ensure at least one valid identifier (non-zero id or emailOrMobile) is provided."""
+        id_valid = self.id is not None and str(self.id).strip() not in ("", "0")
+        email_valid = bool(self.emailOrMobile and self.emailOrMobile.strip())
+        if not id_valid and not email_valid:
+            raise ValueError(
+                "Provide either 'id' (non-zero user ID) or 'emailOrMobile'/'email' to identify the user."
+            )
+        return self
 
 
 # ── Response Models ────────────────────────────────────────────────────────────
@@ -85,6 +115,8 @@ class VerifyOTPResponse(BaseModel):
     refresh_token: Optional[str] = None     # Present only on success
     token_type: str = "bearer"
     expires_in_minutes: Optional[int] = None
+    role: Optional[str] = None              # Present only on success
+    actions: List[str] = Field(default_factory=list)  # Present only on success
 
 
 class LoginSuccessResponse(BaseModel):
@@ -156,7 +188,13 @@ class ForgotPasswordResetRequest(BaseModel):
 class ForgotPasswordResetResponse(BaseModel):
     """Returned after a successful password reset."""
     status: str = "success"
-    message: str = "Password has been reset successfully. Please log in with your new password."
+    message: str = "Password has been reset successfully."
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    expires_in_minutes: Optional[int] = None
+    role: Optional[str] = "user"
+    actions: List[str] = Field(default_factory=list)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -202,6 +240,7 @@ class LoginOTPResponse(BaseModel):
     """Returned after credentials are validated and login OTP is dispatched."""
     status: str = "success"
     message: str = "A login verification code has been sent."
+    userid: Optional[int] = None   # Returned so the client can use it for /resendOTP
 
 
 class VerifyLoginRequest(BaseModel):

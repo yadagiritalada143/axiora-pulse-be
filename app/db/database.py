@@ -28,6 +28,24 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 logger = logging.getLogger(__name__)
 
+
+def _mask_database_url(url: str) -> str:
+    """Redact credentials from database URLs before logging."""
+    if not url:
+        return "<empty>"
+    if "://" not in url:
+        return url
+
+    scheme, remainder = url.split("://", 1)
+    if "@" not in remainder:
+        return f"{scheme}://<redacted>"
+
+    auth, host = remainder.rsplit("@", 1)
+    if ":" in auth:
+        username, _ = auth.split(":", 1)
+        return f"{scheme}://{username}:***@{host}"
+    return f"{scheme}://***@{host}"
+
 # ── Engine ─────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
     _DATABASE_URL,
@@ -61,6 +79,7 @@ async def get_db():  # type: ignore[return]
             yield session
             await session.commit()
         except Exception:
+            logger.exception("Database session error while handling request")
             await session.rollback()
             raise
 
@@ -93,11 +112,18 @@ async def run_migrations() -> None:
     import asyncio
 
     logger.info("Running DB migrations (alembic upgrade head)…")
+    logger.info("Database URL: %s", _mask_database_url(_DATABASE_URL))
 
     cfg = _get_alembic_cfg()
 
-    # Alembic's command.upgrade() is synchronous — run it in a thread pool
-    # to keep the async event loop unblocked during startup.
-    await asyncio.to_thread(command.upgrade, cfg, "head")
+    try:
+        # Alembic's command.upgrade() is synchronous — run it in a thread pool
+        # to keep the async event loop unblocked during startup.
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+    except Exception:
+        logger.exception(
+            "Database migration failed. Check that PostgreSQL is running and DATABASE_URL is correct."
+        )
+        raise
 
     logger.info("DB migrations complete — schema is up to date.")

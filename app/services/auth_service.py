@@ -94,10 +94,15 @@ async def seed_admin_user(db: AsyncSession) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+async def _get_user_by_id_or_none(db: AsyncSession, user_id: int) -> User | None:
+    """Fetch a user by PK. Returns None if not found."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
 async def _get_user_by_id(db: AsyncSession, user_id: int) -> User:
     """Fetch a user by PK. Raises 404 if not found."""
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    user = await _get_user_by_id_or_none(db, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
     return user
@@ -107,6 +112,41 @@ async def _get_user_by_username(db: AsyncSession, username: str) -> User | None:
     """Fetch a user by username (email). Returns None if not found."""
     result = await db.execute(select(User).where(User.username == username.lower().strip()))
     return result.scalar_one_or_none()
+
+
+async def _get_user_by_identifier(
+    db: AsyncSession,
+    user_id: int | str | None = None,
+    email_or_mobile: str | None = None,
+) -> User:
+    """Fetch a user by ID (int or numeric str) or by username/email (str).
+
+    Raises 404 if user is not found or no identifier was provided.
+    """
+    user = None
+
+    if user_id is not None:
+        if isinstance(user_id, int):
+            # Treat 0 as "not provided" — DB IDs start from 1
+            if user_id > 0:
+                user = await _get_user_by_id_or_none(db, user_id)
+        elif isinstance(user_id, str):
+            clean_id = user_id.strip()
+            if clean_id.isdigit() and int(clean_id) > 0:
+                user = await _get_user_by_id_or_none(db, int(clean_id))
+            if user is None and clean_id:
+                user = await _get_user_by_username(db, clean_id)
+
+    if user is None and email_or_mobile is not None:
+        user = await _get_user_by_username(db, email_or_mobile.strip())
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found."
+        )
+
+    return user
 
 
 def _to_register_response(user: User) -> RegisterResponse:
@@ -176,111 +216,192 @@ class AuthService:
     async def verify_otp(
         self, request: VerifyOTPRequest, db: AsyncSession
     ) -> VerifyOTPResponse:
-        """Validate the OTP for a given flow.
+        """Validate the OTP for a given flow ("register" or "login").
 
         Returns a VerifyOTPResponse with status "success" or "failed".
-        On success: sets registerMFA=True and includes a signed JWT.
+        On success: sets registerMFA=True (for register) and includes a signed JWT.
         On failure: returns HTTP 200 with status="failed" and an error message
                     (keeps user on MFA page for retry).
         """
-        user = await _get_user_by_id(db, request.id)
+        user = await _get_user_by_identifier(
+            db, user_id=request.id, email_or_mobile=request.emailOrMobile
+        )
 
-        # ── Expiry check (run first to avoid wasting attempts on expired OTP) ──
+        flow = request.flow.lower().strip() if request.flow else "register"
         now = datetime.now(tz=timezone.utc)
-        expiry = user.register_otp_expiry
-        if expiry is not None and expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
 
-        if user.register_otp is None:
-            logger.warning("No active OTP found for user id=%s", request.id)
-            return VerifyOTPResponse(status="failed", message="OTP is wrong")
+        if flow == "login":
+            if not user.register_mfa:
+                return VerifyOTPResponse(
+                    status="failed",
+                    message="Account not verified. Please complete registration OTP verification."
+                )
 
-        if expiry is None or now > expiry:
-            logger.warning("Expired OTP attempt for user id=%s", request.id)
-            # Clear expired OTP
-            user.register_otp = None
-            user.register_otp_expiry = None
-            user.register_otp_attempts = 0
-            return VerifyOTPResponse(status="failed", message="OTP is expired !")
+            expiry = user.login_otp_expiry
+            if expiry is not None and expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
 
-        # ── OTP match check ────────────────────────────────────────────────────
-        if user.register_otp != request.otp:
-            user.register_otp_attempts += 1
-            logger.warning(
-                "Wrong OTP attempt %s/3 for user id=%s",
-                user.register_otp_attempts, request.id
+            if user.login_otp is None:
+                logger.warning("No active login OTP found for user id=%s", user.id)
+                return VerifyOTPResponse(status="failed", message="OTP is wrong")
+
+            if expiry is None or now > expiry:
+                logger.warning("Expired login OTP attempt for user id=%s", user.id)
+                user.login_otp = None
+                user.login_otp_expiry = None
+                return VerifyOTPResponse(status="failed", message="OTP is expired !")
+
+            if user.login_otp != request.otp:
+                logger.warning("Wrong login OTP attempt for user id=%s", user.id)
+                return VerifyOTPResponse(status="failed", message="OTP is wrong")
+
+            # Success
+            user.login_otp = None
+            user.login_otp_expiry = None
+
+            token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+            access_token = create_access_token(data=token_data)
+            refresh_token = create_refresh_token(data=token_data)
+            logger.info("Login OTP verified via verify_otp for user id=%s (%s)", user.id, user.username)
+
+            actions = ["dashboard"] if user.role == "admin" else []
+            return VerifyOTPResponse(
+                status="success",
+                message="Login OTP Validated Successfully !",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_type="bearer",
+                expires_in_minutes=_ACCESS_TOKEN_MINS,
+                role=user.role,
+                actions=actions,
             )
-            if user.register_otp_attempts >= 3:
-                # Invalidate OTP on 3rd failure
+
+        else:  # flow == "register"
+            expiry = user.register_otp_expiry
+            if expiry is not None and expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+
+            if user.register_otp is None:
+                logger.warning("No active register OTP found for user id=%s", user.id)
+                return VerifyOTPResponse(status="failed", message="OTP is wrong")
+
+            if expiry is None or now > expiry:
+                logger.warning("Expired register OTP attempt for user id=%s", user.id)
                 user.register_otp = None
                 user.register_otp_expiry = None
                 user.register_otp_attempts = 0
-                return VerifyOTPResponse(
-                    status="failed",
-                    message="Too many failed attempts. OTP has been invalidated. Please resend OTP."
+                return VerifyOTPResponse(status="failed", message="OTP is expired !")
+
+            if user.register_otp != request.otp:
+                user.register_otp_attempts += 1
+                logger.warning(
+                    "Wrong register OTP attempt %s/3 for user id=%s",
+                    user.register_otp_attempts, user.id
                 )
-            return VerifyOTPResponse(status="failed", message="OTP is wrong")
+                if user.register_otp_attempts >= 3:
+                    user.register_otp = None
+                    user.register_otp_expiry = None
+                    user.register_otp_attempts = 0
+                    return VerifyOTPResponse(
+                        status="failed",
+                        message="Too many failed attempts. OTP has been invalidated. Please resend OTP."
+                    )
+                return VerifyOTPResponse(status="failed", message="OTP is wrong")
 
-        # ── Success — mark MFA complete, clear OTP, issue token pair ─────────
-        user.register_mfa = True
-        user.register_otp = None
-        user.register_otp_expiry = None
-        user.register_otp_attempts = 0
+            user.register_mfa = True
+            user.register_otp = None
+            user.register_otp_expiry = None
+            user.register_otp_attempts = 0
 
-        token_data = {"sub": str(user.id), "username": user.username}
-        access_token = create_access_token(data=token_data)
-        refresh_token = create_refresh_token(data=token_data)
-        logger.info("OTP verified for user id=%s (%s)", user.id, user.username)
+            token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+            access_token = create_access_token(data=token_data)
+            refresh_token = create_refresh_token(data=token_data)
+            logger.info("Register OTP verified for user id=%s (%s)", user.id, user.username)
 
-        return VerifyOTPResponse(
-            status="success",
-            message="OTP Validated Successfully !",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer",
-            expires_in_minutes=_ACCESS_TOKEN_MINS,
-        )
+            actions = ["dashboard"] if user.role == "admin" else []
+            return VerifyOTPResponse(
+                status="success",
+                message="OTP Validated Successfully !",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_type="bearer",
+                expires_in_minutes=_ACCESS_TOKEN_MINS,
+                role=user.role,
+                actions=actions,
+            )
 
     # ── Resend OTP ─────────────────────────────────────────────────────────────
 
     async def resend_otp(
         self, request: ResendOTPRequest, db: AsyncSession
     ) -> RegisterResponse:
-        """Generate a fresh OTP, update the user record, and resend the email.
+        """Generate a fresh OTP for register or login flow, update DB, and resend OTP.
+
+        Flows:
+          - "register": Resends registration MFA OTP (requires register_mfa=False).
+          - "login":    Resends login MFA OTP (requires register_mfa=True).
 
         Raises:
-            HTTPException 404 if the user id is not found.
-            HTTPException 400 if MFA is already completed (no need to resend).
+            HTTPException 404 if the user is not found.
+            HTTPException 400 if register MFA is already completed (for flow="register").
+            HTTPException 403 if register MFA is NOT completed (for flow="login").
         """
-        user = await _get_user_by_id(db, request.id)
+        user = await _get_user_by_identifier(
+            db, user_id=request.id, email_or_mobile=request.emailOrMobile
+        )
 
-        if user.register_mfa:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="MFA already verified for this account.",
-            )
+        flow = request.flow.lower().strip() if request.flow else "register"
 
-        otp = generate_otp()
-        expiry = otp_expiry()
+        if flow == "login":
+            if not user.register_mfa:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account not verified. Please complete registration OTP verification.",
+                )
 
-        user.register_otp = otp
-        user.register_otp_expiry = expiry
-        user.register_otp_attempts = 0
+            otp = generate_otp()
+            expiry = otp_expiry()
 
-        logger.info("OTP regenerated for user id=%s (%s)", user.id, user.username)
+            user.login_otp = otp
+            user.login_otp_expiry = expiry
 
-        result = await dispatch_otp(user.username, otp)
-        if not result.success:
-            logger.error(
-                "Resend OTP dispatch failed for user id=%s: %s", user.id, result.error
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    result.error
-                    or "Failed to deliver OTP. Please try again."
-                ),
-            )
+            logger.info("Login OTP regenerated for user id=%s (%s)", user.id, user.username)
+
+            result = await dispatch_login_otp(user.username, otp)
+            if not result.success:
+                logger.error(
+                    "Resend login OTP dispatch failed for user id=%s: %s", user.id, result.error
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=result.error or "Failed to deliver login OTP. Please try again.",
+                )
+
+        else:  # flow == "register"
+            if user.register_mfa:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="MFA already verified for this account.",
+                )
+
+            otp = generate_otp()
+            expiry = otp_expiry()
+
+            user.register_otp = otp
+            user.register_otp_expiry = expiry
+            user.register_otp_attempts = 0
+
+            logger.info("Register OTP regenerated for user id=%s (%s)", user.id, user.username)
+
+            result = await dispatch_otp(user.username, otp)
+            if not result.success:
+                logger.error(
+                    "Resend register OTP dispatch failed for user id=%s: %s", user.id, result.error
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=result.error or "Failed to deliver OTP. Please try again.",
+                )
 
         return _to_register_response(user)
 
@@ -330,7 +451,7 @@ class AuthService:
                 detail=result.error or "Failed to deliver login verification code.",
             )
 
-        return LoginOTPResponse()
+        return LoginOTPResponse(userid=user.id)
 
     # ── Verify Login ───────────────────────────────────────────────────────────
 
@@ -593,12 +714,27 @@ class AuthService:
         # 4. Stamp password_changed_at — invalidates all access tokens issued before this moment
         user.password_changed_at = datetime.now(tz=timezone.utc)
 
+        # 5. Generate fresh access and refresh token pair for immediate login
+        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
+
         logger.info(
             "Password reset completed for user id=%s. All prior access tokens are now revoked.",
             user.id
         )
 
-        return ForgotPasswordResetResponse()
+        actions = ["dashboard"] if user.role == "admin" else []
+        return ForgotPasswordResetResponse(
+            status="success",
+            message="Password has been reset successfully.",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in_minutes=_ACCESS_TOKEN_MINS,
+            role=user.role,
+            actions=actions,
+        )
 
     # ── Change Password (Authenticated/Logged In Users) ───────────────────────
 

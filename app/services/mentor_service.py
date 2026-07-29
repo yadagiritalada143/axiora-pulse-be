@@ -183,7 +183,7 @@ class MentorService:
 
                 orchestrator_resp = await orchestrator.run(request)
                 if orchestrator_resp.status == "success" and orchestrator_resp.result:
-                    state.validation_result = orchestrator_resp.result.dict()
+                    state.validation_result = json.loads(orchestrator_resp.result.json())
                     state.state = "VALIDATED"
                 else:
                     state.state = "READY_TO_VALIDATE"
