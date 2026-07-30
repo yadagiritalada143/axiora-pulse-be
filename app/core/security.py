@@ -118,6 +118,18 @@ def create_refresh_token(data: dict) -> str:
     return token
 
 
+def verify_refresh_token(token: str) -> dict:
+    """Decode a refresh token and reject access or reset tokens."""
+    try:
+        payload = jwt.decode(token, _JWT_SECRET_KEY, algorithms=[_JWT_ALGORITHM])
+    except Exception as exc:
+        raise ValueError("Invalid or expired refresh token.") from exc
+
+    if payload.get("scope") != "refresh" or not payload.get("sub") or not payload.get("sid"):
+        raise ValueError("Invalid refresh token.")
+    return payload
+
+
 def create_password_reset_token(user_id: str, username: str) -> str:
     """Create a temporary password reset token valid for 10 minutes with password_reset scope."""
     payload = {

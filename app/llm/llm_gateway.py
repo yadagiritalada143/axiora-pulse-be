@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from pydantic import BaseModel
 
 
@@ -11,6 +11,7 @@ class LLMRequest(BaseModel):
     model: str = ""                 # if empty, provider uses its default
     temperature: float = 0.3
     max_tokens: int = 2048
+    stream: bool = False            # Enable token streaming (word-by-word/chunk-by-chunk)
     # NOTE: response_format="json" is only supported by some providers (OpenAI).
     # For HuggingFace / Llama we rely on prompt engineering instead.
     response_format: str = "text"   # text | json
@@ -32,12 +33,16 @@ class LLMResponse(BaseModel):
 class LLMGateway(ABC):
     """
     Abstract base class for all LLM providers.
-    All agents call LLMGateway.complete() — never the provider SDK directly.
+    All agents call LLMGateway.complete() or LLMGateway.complete_stream() — never provider SDK directly.
     """
 
     @abstractmethod
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Send a prompt and return a structured response."""
+
+    @abstractmethod
+    async def complete_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
+        """Send a prompt and yield response tokens incrementally (stream=True)."""
 
     @abstractmethod
     def get_provider_name(self) -> str:

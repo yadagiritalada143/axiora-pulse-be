@@ -9,6 +9,7 @@ Endpoints covered:
   POST /resendOTP   → ResendOTPRequest     → RegisterResponse
   POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
+from datetime import datetime
 from typing import List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator, model_validator
@@ -271,6 +272,43 @@ class AdminLoginResponse(BaseModel):
     expires_in_minutes: int
     role: str = "admin"
     actions: List[str] = Field(default_factory=lambda: ["dashboard"])
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(validation_alias=AliasChoices("refreshToken", "refresh_token"))
+
+
+class RefreshTokenData(BaseModel):
+    accessToken: str
+    refreshToken: str
+
+
+class RefreshTokenResponse(BaseModel):
+    data: RefreshTokenData
+
+
+class LogoutResponse(BaseModel):
+    status: str = "success"
+    message: str = "Logged out successfully."
+
+
+class CurrentUserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    avatarUrl: None = None
+    role: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class UpdateCurrentUserRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr
+
+
+class CurrentUserEnvelope(BaseModel):
+    data: CurrentUserResponse
 
 
 

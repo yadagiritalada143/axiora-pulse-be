@@ -2,9 +2,6 @@
 Planner
 ──────────────────────────────────────────────────────────────────────────────
 Decides WHICH agents to run based on the requested workflow type.
-
-Phase 1: Only idea_validation_agent is active.
-Phase 2+: Uncomment agents as they are implemented.
 """
 import logging
 
@@ -14,26 +11,21 @@ logger = logging.getLogger(__name__)
 
 
 # ── Workflow → Agent mapping ───────────────────────────────────────────────────
-# Agents are executed in the order listed.
-# Add new agents here as they are built — no changes needed elsewhere.
 
 WORKFLOW_AGENT_MAP: dict[WorkflowType, list[str]] = {
     WorkflowType.IDEA_VALIDATION: [
         "idea_validation_agent",
         "market_research_agent",
-        # Phase 2 — uncomment when implemented:
-        # "survey_intelligence_agent",
-        # "gtm_strategy_agent",
-        # "financial_readiness_agent",
+        "survey_intelligence_agent",
     ],
     WorkflowType.SURVEY_GENERATION: [
-        # "survey_intelligence_agent",   # Phase 2
+        "survey_intelligence_agent",
     ],
     WorkflowType.SURVEY_ANALYTICS: [
-        # "survey_intelligence_agent",   # Phase 2
+        "survey_intelligence_agent",
     ],
     WorkflowType.REPORT_GENERATION: [
-        # Handled by the Report Engine, not agents
+        # Handled by the Report Engine
     ],
 }
 

@@ -130,6 +130,10 @@ def _validate_security_config() -> None:
 # Tags listed in alphabetical order — FastAPI preserves this order in Swagger UI.
 _OPENAPI_TAGS = [
     {
+        "name": "Admin",
+        "description": "Administrator-only dashboard data.",
+    },
+    {
         "name": "Auth",
         "description": "User registration and login. Issues JWT Bearer tokens for authenticated access.",
     },
@@ -192,16 +196,22 @@ app.add_middleware(
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 from app.api.v1 import auth as auth_router
+from app.api.v1 import admin as admin_router
 from app.api.v1 import interactive_questionnaire as interactive_questionnaire_router
 from app.api.v1 import questionnaire as questionnaire_router
 from app.api.v1 import orchestration as orchestration_router
 from app.api.v1 import workspace as workspace_router
+from app.api import profile as profile_router
 
 app.include_router(auth_router.router, prefix="/api/v1")
+app.include_router(admin_router.router, prefix="/api/v1")
 app.include_router(interactive_questionnaire_router.router, prefix="/api/v1")
 app.include_router(questionnaire_router.router, prefix="/api/v1")
 app.include_router(orchestration_router.router, prefix="/api/v1")
 app.include_router(workspace_router.router, prefix="/api/v1")
+# These paths intentionally remain unversioned to match the existing SPA contract.
+app.include_router(profile_router.auth_router, prefix="/api")
+app.include_router(profile_router.users_router, prefix="/api")
 
 
 # ── Root endpoints ─────────────────────────────────────────────────────────────

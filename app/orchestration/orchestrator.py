@@ -11,12 +11,6 @@ Responsibilities:
   5. Aggregate all outputs (ResultAggregator)
   6. Calculate score and verdict (ValidationEngine)
   7. Return a structured OrchestrationResponse
-
-Adding a new agent:
-  → Implement the agent class in app/agents/
-  → Register it in AGENT_REGISTRY below
-  → Add it to WORKFLOW_AGENT_MAP in planner.py
-  → That's it — no other changes needed.
 """
 import logging
 import uuid
@@ -36,17 +30,14 @@ from app.orchestration.result_aggregator import result_aggregator
 from app.orchestration.validation_engine import validation_engine
 
 # ── Agent Registry ─────────────────────────────────────────────────────────────
-# Import each agent class and register it here.
-# Phase 2+: add market_research_agent, survey_intelligence_agent, etc.
 from app.agents.idea_validation_agent import IdeaValidationAgent
 from app.agents.market_research_agent import MarketResearchAgent
+from app.agents.survey_intelligence_agent import SurveyIntelligenceAgent
 
 AGENT_REGISTRY: dict[str, type] = {
     "idea_validation_agent": IdeaValidationAgent,
     "market_research_agent": MarketResearchAgent,
-    # "survey_intelligence_agent": SurveyIntelligenceAgent, # Phase 2
-    # "gtm_strategy_agent":        GTMStrategyAgent,        # Phase 2
-    # "financial_readiness_agent": FinancialReadinessAgent, # Phase 2
+    "survey_intelligence_agent": SurveyIntelligenceAgent,
 }
 
 logger = logging.getLogger(__name__)
