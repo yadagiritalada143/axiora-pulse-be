@@ -155,3 +155,7 @@ __pycache__/
 *.py[cod]
 *.pyc
 .venv/
+
+#Test coverage
+.coverage
+pytest.ini

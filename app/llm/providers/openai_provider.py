@@ -1,9 +1,10 @@
 """
 OpenAI Provider – alternative to HuggingFace.
-Set DEFAULT_PROVIDER=openai and OPENAI_API_KEY in .env to use this.
+Supports stream=True for real-time token/chunk output.
 """
 import logging
 import os
+from typing import AsyncGenerator
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, APITimeoutError, APIError
@@ -43,7 +44,6 @@ class OpenAIProvider(LLMGateway):
             or os.getenv("DEFAULT_MODEL")
             or "gpt-4o-mini"
         )
-        # Strip any HuggingFace-style model names that may have slipped through DEFAULT_MODEL (only if base_url is not set)
         if not base_url and "/" in self._default_model and not self._default_model.startswith("ft:"):
             self._default_model = "gpt-4o-mini"
 
@@ -53,7 +53,8 @@ class OpenAIProvider(LLMGateway):
     def get_default_model(self) -> str:
         return self._default_model
 
-    async def complete(self, request: LLMRequest) -> LLMResponse:
+    async def complete_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
+        """Stream response tokens/chunks word-by-word/line-by-line."""
         model = request.model or self._default_model
         messages = []
 
@@ -65,9 +66,54 @@ class OpenAIProvider(LLMGateway):
             "model": model,
             "messages": messages,
             "temperature": request.temperature,
+            "stream": True,
         }
 
-        # gpt-5.4-x and o1/o3 reasoning models use max_completion_tokens, not max_tokens
+        if model.startswith(("o1", "o3")) or "gpt-5.4" in model:
+            kwargs["max_completion_tokens"] = request.max_tokens
+        else:
+            kwargs["max_tokens"] = request.max_tokens
+
+        if request.response_format == "json":
+            kwargs["response_format"] = {"type": "json_object"}
+
+        try:
+            stream_resp = await self.client.chat.completions.create(**kwargs)
+            async for chunk in stream_resp:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"[OpenAI Stream Error]: {e}")
+            yield f"[Stream Error: {e}]"
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        model = request.model or self._default_model
+
+        if request.stream:
+            # Accumulate streamed chunks while returning LLMResponse
+            chunks = []
+            async for chunk in self.complete_stream(request):
+                chunks.append(chunk)
+            full_content = "".join(chunks)
+            return LLMResponse(
+                content=full_content,
+                model=model,
+                provider="openai",
+                total_tokens=len(full_content) // 4,
+                success=True,
+            )
+
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.user_prompt})
+
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": request.temperature,
+        }
+
         if model.startswith(("o1", "o3")) or "gpt-5.4" in model:
             kwargs["max_completion_tokens"] = request.max_tokens
         else:

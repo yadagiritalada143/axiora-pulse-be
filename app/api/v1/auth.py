@@ -34,10 +34,33 @@ from app.models.auth_models import (
     LoginOTPResponse,
     VerifyLoginRequest,
     VerifyLoginResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    LogoutResponse,
 )
 from app.services.auth_service import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+
+@router.post("/refresh", response_model=RefreshTokenResponse, summary="Rotate a refresh token")
+@limiter.limit("30/minute")
+async def refresh_token(
+    request: Request,
+    payload: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RefreshTokenResponse:
+    return await auth_service.refresh(payload, db)
+
+
+@router.post("/logout", response_model=LogoutResponse, summary="Log out the current user")
+@limiter.limit("30/minute")
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> LogoutResponse:
+    return await auth_service.logout(current_user, db)
 
 
 # ── Register ───────────────────────────────────────────────────────────────────

@@ -13,15 +13,17 @@ Takes aggregated agent results and produces:
   - recommendations    (next-step guidance)
   - mentor_summary     (human-readable explanation for the AI Mentor)
 
-Phase 1 weights
-  idea_validation_agent = 1.0 (100%)  ← only agent active right now
+Phase 1 active weights (sum to 1.0):
+  idea_validation_agent      = 0.35 (35%)
+  market_research_agent      = 0.35 (35%)
+  survey_intelligence_agent  = 0.30 (30%)
 
-Phase 2+ weights (will normalise to 1.0 total):
-  idea_validation_agent  = 0.20
-  market_research_agent  = 0.20
-  survey_intelligence    = 0.25
-  gtm_strategy_agent     = 0.15
-  financial_readiness    = 0.20
+Future Phase 2+ targets:
+  idea_validation_agent      = 0.20
+  market_research_agent      = 0.20
+  survey_intelligence_agent  = 0.25
+  gtm_strategy_agent         = 0.15
+  financial_readiness_agent  = 0.20
 """
 import logging
 from typing import Any
@@ -32,14 +34,13 @@ logger = logging.getLogger(__name__)
 
 
 # ── Scoring weights ────────────────────────────────────────────────────────────
-# Must sum to 1.0.  Update here when a new agent becomes active.
 AGENT_WEIGHTS: dict[str, float] = {
-    "idea_validation_agent": 0.5,
-    "market_research_agent": 0.5,
-    # Phase 2 (uncomment and re-normalise when implemented):
-    # "survey_intelligence_agent":  0.25,
-    # "gtm_strategy_agent":         0.15,
-    # "financial_readiness_agent":  0.20,
+    "idea_validation_agent": 0.35,
+    "market_research_agent": 0.35,
+    "survey_intelligence_agent": 0.30,
+    # Phase 2+ addition:
+    # "gtm_strategy_agent": 0.15,
+    # "financial_readiness_agent": 0.20,
 }
 
 # ── Verdict thresholds ─────────────────────────────────────────────────────────
@@ -47,19 +48,17 @@ _VERDICT_TABLE = [
     (80.0, ValidationVerdict.BUILD),
     (60.0, ValidationVerdict.VALIDATE_MORE),
     (40.0, ValidationVerdict.REDUCE_SCOPE),
-    (0.0,  ValidationVerdict.HOLD),
+    (0.0, ValidationVerdict.HOLD),
 ]
 
 _VERDICT_MESSAGES = {
     ValidationVerdict.BUILD: (
-        "Your idea shows strong validation signals. "
-        "The problem is well-defined and the customer hypothesis is clear. "
-        "Consider building a focused MVP to test your key assumptions."
+        "Your idea shows strong validation signals across problem clarity, target market profiling, "
+        "and survey hypothesis design. Consider building a focused MVP to test your key assumptions."
     ),
     ValidationVerdict.VALIDATE_MORE: (
         "Your idea has real potential, but some critical assumptions still need testing. "
-        "I recommend running a short validation survey with your target customers "
-        "before committing to building."
+        "I recommend running a short validation survey with your target customers before committing to building."
     ),
     ValidationVerdict.REDUCE_SCOPE: (
         "The idea as described may be too broad or has significant clarity gaps. "
@@ -67,13 +66,11 @@ _VERDICT_MESSAGES = {
     ),
     ValidationVerdict.PIVOT: (
         "The current idea framing has multiple gaps or conflicts. "
-        "Consider revisiting the core problem or exploring a different approach "
-        "to the same customer need."
+        "Consider revisiting the core problem or exploring a different approach to the same customer need."
     ),
     ValidationVerdict.HOLD: (
         "We need considerably more information to validate this idea. "
-        "Please provide more detail about the problem, target customer, "
-        "and what you specifically want to validate."
+        "Please provide more detail about the problem, target customer, and validation goal."
     ),
 }
 
@@ -169,42 +166,28 @@ class ValidationEngine:
         assumptions: list[str] = []
         recommendations: list[str] = []
 
-        # ── idea_validation_agent ──────────────────────────────────────────────
+        # 1. idea_validation_agent
         idea_data: dict = agent_results.get("idea_validation_agent", {}).get("data", {})
         if idea_data:
-            # Strengths — use problem summary if clarity is decent
-            score = idea_data.get("problem_clarity_score")
-            if score is None:
-                score = idea_data.get("idea_clarity_score", 0)
-
+            score = idea_data.get("problem_clarity_score") or idea_data.get("idea_clarity_score", 0)
             problem = idea_data.get("problem_statement_summary") or idea_data.get("problem_summary", "")
             customer = idea_data.get("who_and_frequency") or idea_data.get("customer_hypothesis", "")
 
             if score >= 60 and problem:
-                strengths.append(f"Clear problem identified: {problem}")
+                strengths.append(f"Problem Definition: {problem}")
             if score >= 60 and customer:
-                strengths.append(f"Customer cohort defined: {customer}")
+                strengths.append(f"Customer Cohort: {customer}")
 
-            # Risks
             for flag in idea_data.get("red_flags", []):
                 risks.append(str(flag))
 
-            # Assumptions
             assumptions_list = idea_data.get("assumption_list") or idea_data.get("key_assumptions", [])
             for assumption in assumptions_list:
                 assumptions.append(str(assumption))
 
-            # Recommendation from agent
-            agent_rec = idea_data.get("initial_recommendation", "")
-            if agent_rec:
-                recommendations.append(
-                    f"Idea validation analysis suggests: {agent_rec.replace('_', ' ').title()}"
-                )
-
-        # ── market_research_agent ─────────────────────────────────────────────
+        # 2. market_research_agent
         market_data: dict = agent_results.get("market_research_agent", {}).get("data", {})
         if market_data:
-            # ICP & Persona strengths
             icp = market_data.get("primary_icp_summary", "")
             if icp:
                 strengths.append(f"Primary ICP: {icp}")
@@ -212,57 +195,34 @@ class ValidationEngine:
             if persona:
                 strengths.append(f"Persona: {persona}")
 
-            # Audience narrowness
-            narrowness = market_data.get("audience_narrowness_score")
-            if narrowness is not None:
-                if narrowness >= 61:
-                    strengths.append(f"Audience Narrowness Score: {narrowness}/100 — well-defined target segment.")
-                elif narrowness <= 30:
-                    risks.append(f"Audience Narrowness Score: {narrowness}/100 — audience is too broad. Narrow to a specific segment.")
-
-            # Opportunity signals → strengths
             for signal in market_data.get("opportunity_signals", []):
                 strengths.append(f"Market Signal: {signal}")
-
-            # Market & audience red flags → risks
             for flag in market_data.get("red_flags", []):
                 risks.append(str(flag))
             for risk in market_data.get("risk_signals", []):
                 risks.append(str(risk))
 
-            # Target customer segments → strengths
-            segments = market_data.get("target_customer_segments", [])
-            if segments:
-                strengths.append(f"Target Customer Segment: {segments[0]}")
+        # 3. survey_intelligence_agent
+        survey_data: dict = agent_results.get("survey_intelligence_agent", {}).get("data", {})
+        if survey_data:
+            stitle = survey_data.get("survey_title", "")
+            if stitle:
+                strengths.append(f"Survey Objective: Designed '{stitle}' to test core assumptions.")
+            q_count = len(survey_data.get("questions", []))
+            if q_count > 0:
+                strengths.append(f"Hypothesis Questionnaire: {q_count} targeted questions generated.")
 
-
-        # Add next-step recommendations based on verdict
+        # Verdict-based next steps
         if verdict == ValidationVerdict.BUILD:
-            recommendations.append(
-                "Create a landing page or simple prototype to test real demand."
-            )
-            recommendations.append(
-                "Run a 6-question validation survey to confirm willingness-to-pay."
-            )
+            recommendations.append("Deploy validation survey to 20-30 target respondents.")
+            recommendations.append("Build landing page prototype to capture early signups.")
         elif verdict == ValidationVerdict.VALIDATE_MORE:
-            recommendations.append(
-                "Create a short validation survey and target 20–30 potential customers."
-            )
-            recommendations.append(
-                "Validate the top 2–3 assumptions before investing in development."
-            )
+            recommendations.append("Run customer interviews to confirm pain severity.")
+            recommendations.append("Distribute validation survey to refine value proposition.")
         elif verdict == ValidationVerdict.REDUCE_SCOPE:
-            recommendations.append(
-                "Pick ONE customer segment and ONE specific problem to start with."
-            )
-        elif verdict == ValidationVerdict.PIVOT:
-            recommendations.append(
-                "Revisit the problem statement — talk to 5 potential customers first."
-            )
+            recommendations.append("Focus on one core pain point and single ideal customer profile.")
         elif verdict == ValidationVerdict.HOLD:
-            recommendations.append(
-                "Provide more details about the problem, customer, and validation goal."
-            )
+            recommendations.append("Gather further detail on problem severity and target buyer profile.")
 
         return strengths, risks, assumptions, recommendations
 
@@ -277,13 +237,8 @@ class ValidationEngine:
     ) -> str:
         base = _VERDICT_MESSAGES.get(verdict, "Validation complete.")
 
-        risk_note = ""
-        if risks:
-            risk_note = f" Key risk to address: {risks[0]}"
-
-        top_rec = ""
-        if recommendations:
-            top_rec = f" Suggested next step: {recommendations[0]}"
+        risk_note = f" Key risk to address: {risks[0]}" if risks else ""
+        top_rec = f" Suggested next step: {recommendations[0]}" if recommendations else ""
 
         disclaimer = (
             "\n\n⚠ This is decision-support guidance only — "
@@ -295,7 +250,7 @@ class ValidationEngine:
             f"{base}{risk_note}{top_rec}{disclaimer}"
         )
 
-    # ── Empty result (when no agents ran) ─────────────────────────────────────
+    # ── Empty result ──────────────────────────────────────────────────────────
 
     def _empty_result(self) -> dict[str, Any]:
         return {
@@ -305,9 +260,7 @@ class ValidationEngine:
             "strengths": [],
             "risks": ["No agent results were produced."],
             "assumptions": [],
-            "recommendations": [
-                "Please retry the validation. If the problem persists, check server logs."
-            ],
+            "recommendations": ["Please retry the validation."],
             "mentor_summary": (
                 "[Validation Score: 0/100 — HOLD]\n\n"
                 "We could not complete the validation at this time. Please try again.\n\n"

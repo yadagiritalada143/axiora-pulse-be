@@ -3,22 +3,21 @@ Base Agent
 ──────────────────────────────────────────────────────────────────────────────
 Abstract base class that every Axiora Pulse agent must extend.
 
-Standard agent lifecycle (every agent follows this — no exceptions):
+Lifecycle:
   1. Load skill from SkillRegistry
-  2. Build prompt using the skill template
-  3. Call LLM Gateway (never the provider SDK directly)
+  2. Build prompt using skill template
+  3. Call LLM Gateway (supports stream=True for real-time word-by-word streaming)
   4. Parse raw LLM response
-  5. Validate output schema
-  6. Apply guardrails
-  7. Return structured AgentOutput
+  5. Validate output schema & guardrails
+  6. Return structured AgentOutput
 """
 import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable, Awaitable
 
-from app.llm.llm_gateway import LLMGateway, LLMRequest
+from app.llm.llm_gateway import LLMGateway, LLMRequest, LLMResponse
 from app.models.agent_models import AgentInput, AgentOutput, AgentStatus
 from app.skills.skill_registry import Skill, skill_registry
 
@@ -28,13 +27,6 @@ logger = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """
     Abstract base for all Axiora Pulse agents.
-
-    Subclasses must define:
-      - agent_name : str       — unique name, used in logs and output
-      - skill_name : str       — matches the 'name' field in the skill YAML
-      - _build_prompt()        — renders the skill template with agent input
-      - _parse_output()        — parses raw LLM text into a structured dict
-      - _extract_score()       — returns a float 0–100 from parsed output
     """
 
     agent_name: str = "base_agent"
@@ -45,7 +37,7 @@ class BaseAgent(ABC):
         self.skill: Skill | None = None
         self._load_skill()
 
-    # ── Lifecycle hooks (subclasses implement these) ───────────────────────────
+    # ── Lifecycle hooks ────────────────────────────────────────────────────────
 
     @abstractmethod
     def _build_prompt(self, agent_input: AgentInput) -> str:
@@ -61,29 +53,34 @@ class BaseAgent(ABC):
 
     # ── Main execution entry point ─────────────────────────────────────────────
 
-    async def run(self, agent_input: AgentInput) -> AgentOutput:
+    async def run(
+        self,
+        agent_input: AgentInput,
+        stream: bool = False,
+        stream_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> AgentOutput:
         """
-        Execute the full agent lifecycle.
-        Always returns an AgentOutput — never raises an exception to the caller.
+        Execute full agent lifecycle.
+        Supports stream=True for incremental token streaming.
         """
-        logger.info(f"[{self.agent_name}] ▶ Starting execution")
+        logger.info(f"[{self.agent_name}] ▶ Starting execution (stream={stream})")
         executed_at = datetime.utcnow()
 
-        # ── Step 1: Ensure skill is available ─────────────────────────────────
+        # Step 1: Ensure skill is available
         if not self.skill:
             return self._failed_output(
                 "Skill not loaded. Check that the skill YAML file exists.",
                 executed_at=executed_at,
             )
 
-        # ── Step 2: Build prompt ───────────────────────────────────────────────
+        # Step 2: Build prompt
         try:
             prompt = self._build_prompt(agent_input)
         except Exception as e:
             logger.error(f"[{self.agent_name}] Prompt build failed: {e}")
             return self._failed_output(f"Prompt build error: {e}", executed_at=executed_at)
 
-        # ── Step 3: Call LLM Gateway ───────────────────────────────────────────
+        # Step 3: Call LLM Gateway (with streaming if enabled)
         llm_request = LLMRequest(
             system_prompt=(
                 f"You are {self.agent_name}, a specialist AI analysis unit "
@@ -94,10 +91,25 @@ class BaseAgent(ABC):
             response_format="json",
             temperature=0.3,
             max_tokens=2048,
+            stream=stream or (stream_callback is not None),
         )
 
         try:
-            llm_response = await self.llm.complete(llm_request)
+            if stream_callback:
+                chunks = []
+                async for chunk in self.llm.complete_stream(llm_request):
+                    chunks.append(chunk)
+                    await stream_callback(chunk)
+                full_text = "".join(chunks)
+                llm_response = LLMResponse(
+                    content=full_text,
+                    model=self.llm.get_default_model(),
+                    provider=self.llm.get_provider_name(),
+                    total_tokens=len(full_text) // 4,
+                    success=True,
+                )
+            else:
+                llm_response = await self.llm.complete(llm_request)
         except Exception as e:
             logger.error(f"[{self.agent_name}] LLM gateway call raised: {e}")
             return self._failed_output("LLM call failed unexpectedly.", executed_at=executed_at)
@@ -114,7 +126,7 @@ class BaseAgent(ABC):
                 executed_at=executed_at,
             )
 
-        # ── Step 4: Parse output ───────────────────────────────────────────────
+        # Step 4: Parse output
         try:
             parsed = self._parse_output(llm_response.content)
         except json.JSONDecodeError as e:
@@ -130,12 +142,12 @@ class BaseAgent(ABC):
             logger.error(f"[{self.agent_name}] Output parse error: {e}")
             return self._failed_output("Output parsing failed.", executed_at=executed_at)
 
-        # ── Step 5: Extract score and confidence ───────────────────────────────
+        # Step 5: Extract score and confidence
         try:
             score = float(self._extract_score(parsed))
             score = max(0.0, min(100.0, score))
         except Exception:
-            score = 50.0  # safe default
+            score = 50.0
 
         confidence = float(parsed.get("confidence", 0.5))
         confidence = max(0.0, min(1.0, confidence))
@@ -165,10 +177,8 @@ class BaseAgent(ABC):
         self.skill = skill_registry.get(self.skill_name)
         if not self.skill:
             raise ValueError(
-                f"[{self.agent_name}] Skill '{self.skill_name}' not found in registry. "
-                "Ensure the YAML file exists in app/skills/ and is correctly named."
+                f"[{self.agent_name}] Skill '{self.skill_name}' not found in registry."
             )
-        logger.debug(f"[{self.agent_name}] Skill loaded: {self.skill}")
 
     def _failed_output(
         self,

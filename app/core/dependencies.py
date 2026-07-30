@@ -78,8 +78,8 @@ async def get_current_user(
     if user_id is None:
         raise credentials_exc
 
-    # Reject password-reset scoped tokens — they must not grant access.
-    if payload.get("scope") == "password_reset":
+    # Refresh and password-reset scoped tokens must never grant API access.
+    if payload.get("scope") in {"password_reset", "refresh"}:
         raise credentials_exc
 
     # ── Load user ──────────────────────────────────────────────────────────────
@@ -113,3 +113,13 @@ async def get_current_user(
             )
 
     return user
+
+
+async def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Return the current user only when they have administrator privileges."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges are required.",
+        )
+    return current_user

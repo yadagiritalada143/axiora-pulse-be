@@ -15,10 +15,11 @@ OTP delivery is routed through otp_dispatcher which detects email vs phone
 automatically — auth_service never needs to know the channel used.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -30,6 +31,7 @@ from app.core.security import (
     verify_password_async,
     create_password_reset_token,
     verify_password_reset_token,
+    verify_refresh_token,
 )
 import os
 
@@ -38,7 +40,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _ACCESS_TOKEN_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
-from app.db.models import User
+from app.db.models import RefreshSession, User
 from app.models.auth_models import (
     AdminLoginResponse,
     LoginSuccessResponse,
@@ -59,6 +61,10 @@ from app.models.auth_models import (
     LoginOTPResponse,
     VerifyLoginRequest,
     VerifyLoginResponse,
+    RefreshTokenRequest,
+    RefreshTokenData,
+    RefreshTokenResponse,
+    LogoutResponse,
 )
 from app.services.otp_dispatcher import dispatch_otp, dispatch_password_reset_otp, dispatch_login_otp
 
@@ -157,6 +163,17 @@ def _to_register_response(user: User) -> RegisterResponse:
     )
 
 
+async def _issue_token_pair(user: User, db: AsyncSession) -> tuple[str, str]:
+    """Create an access token and a rotating, server-revocable refresh session."""
+    session_id = str(uuid4())
+    token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+    access_token = create_access_token(data=token_data)
+    refresh_token = create_refresh_token(data={**token_data, "sid": session_id})
+    db.add(RefreshSession(id=session_id, user_id=user.id, expires_at=datetime.now(tz=timezone.utc) + timedelta(days=7)))
+    await db.flush()
+    return access_token, refresh_token
+
+
 # ── Auth Service ───────────────────────────────────────────────────────────────
 
 class AuthService:
@@ -211,6 +228,38 @@ class AuthService:
 
         return _to_register_response(user)
 
+    async def refresh(self, request: RefreshTokenRequest, db: AsyncSession) -> RefreshTokenResponse:
+        """Rotate a valid refresh token and invalidate the token that was presented."""
+        try:
+            payload = verify_refresh_token(request.refresh_token)
+            user_id = int(payload["sub"])
+            session_id = str(payload["sid"])
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token.", headers={"WWW-Authenticate": "Bearer"})
+
+        session = await db.get(RefreshSession, session_id)
+        now = datetime.now(tz=timezone.utc)
+        if session is None or session.user_id != user_id or session.revoked_at is not None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token is no longer valid.")
+        expiry = session.expires_at.replace(tzinfo=timezone.utc) if session.expires_at.tzinfo is None else session.expires_at
+        if expiry <= now:
+            session.revoked_at = now
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has expired.")
+
+        user = await _get_user_by_id(db, user_id)
+        if not user.register_mfa:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is not active.")
+
+        session.revoked_at = now
+        access_token, refresh_token = await _issue_token_pair(user, db)
+        return RefreshTokenResponse(data=RefreshTokenData(accessToken=access_token, refreshToken=refresh_token))
+
+    async def logout(self, user: User, db: AsyncSession) -> LogoutResponse:
+        """Revoke every refresh session owned by the authenticated user."""
+        await db.execute(update(RefreshSession).where(RefreshSession.user_id == user.id, RefreshSession.revoked_at.is_(None)).values(revoked_at=datetime.now(tz=timezone.utc)))
+        logger.info("Logged out user id=%s and revoked all refresh sessions.", user.id)
+        return LogoutResponse()
+
     # ── Verify OTP ─────────────────────────────────────────────────────────────
 
     async def verify_otp(
@@ -259,9 +308,7 @@ class AuthService:
             user.login_otp = None
             user.login_otp_expiry = None
 
-            token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
-            access_token = create_access_token(data=token_data)
-            refresh_token = create_refresh_token(data=token_data)
+            access_token, refresh_token = await _issue_token_pair(user, db)
             logger.info("Login OTP verified via verify_otp for user id=%s (%s)", user.id, user.username)
 
             actions = ["dashboard"] if user.role == "admin" else []
@@ -313,9 +360,7 @@ class AuthService:
             user.register_otp_expiry = None
             user.register_otp_attempts = 0
 
-            token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
-            access_token = create_access_token(data=token_data)
-            refresh_token = create_refresh_token(data=token_data)
+            access_token, refresh_token = await _issue_token_pair(user, db)
             logger.info("Register OTP verified for user id=%s (%s)", user.id, user.username)
 
             actions = ["dashboard"] if user.role == "admin" else []
@@ -510,9 +555,7 @@ class AuthService:
         user.login_otp_expiry = None
 
         # Generate tokens
-        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
-        access_token = create_access_token(data=token_data)
-        refresh_token = create_refresh_token(data=token_data)
+        access_token, refresh_token = await _issue_token_pair(user, db)
 
         logger.info("Login OTP successfully verified for user id=%s. Access and Refresh tokens issued.", user.id)
 
@@ -554,9 +597,7 @@ class AuthService:
                 detail="Access denied. Admin privileges required.",
             )
 
-        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
-        access_token = create_access_token(data=token_data)
-        refresh_token = create_refresh_token(data=token_data)
+        access_token, refresh_token = await _issue_token_pair(user, db)
 
         logger.info("Admin user logged in successfully: %s (id=%s)", user.username, user.id)
 
@@ -708,6 +749,19 @@ class AuthService:
                 detail="User not found."
             )
 
+        token_iat = payload.get("iat")
+        password_changed_at = user.password_changed_at
+        if password_changed_at is not None and token_iat is not None:
+            if password_changed_at.tzinfo is None:
+                password_changed_at = password_changed_at.replace(tzinfo=timezone.utc)
+            token_issued_at = datetime.fromtimestamp(token_iat, tz=timezone.utc)
+            if token_issued_at <= password_changed_at:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired reset token.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         # 3. Hash new password and update record
         user.password = await hash_password_async(request.new_password)
 
@@ -715,9 +769,7 @@ class AuthService:
         user.password_changed_at = datetime.now(tz=timezone.utc)
 
         # 5. Generate fresh access and refresh token pair for immediate login
-        token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
-        access_token = create_access_token(data=token_data)
-        refresh_token = create_refresh_token(data=token_data)
+        access_token, refresh_token = await _issue_token_pair(user, db)
 
         logger.info(
             "Password reset completed for user id=%s. All prior access tokens are now revoked.",
