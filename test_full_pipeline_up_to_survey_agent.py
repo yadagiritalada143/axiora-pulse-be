@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 # Mock LLM Gateway providing contextually appropriate responses for all 3 agents
 class MultiAgentMockLLMGateway:
 
+    def get_provider_name(self) -> str:
+        return "mock_provider"
+
+    def get_default_model(self) -> str:
+        return "mock-model"
+
     async def complete(self, request) -> LLMResponse:
         system_prompt = request.system_prompt.lower()
         
@@ -96,6 +102,7 @@ class MultiAgentMockLLMGateway:
             success=True,
             content=content,
             model="gemini-1.5-flash",
+            provider=self.get_provider_name(),
             tokens_input=200,
             tokens_output=300,
             total_tokens=500,

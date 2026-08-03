@@ -4,6 +4,8 @@
 
 Built with **FastAPI** · **PostgreSQL** · **SQLAlchemy (async)** · **Alembic** · **Multi-provider LLM support**
 
+
+python -m uvicorn main:app --reload
 ---
 
 ## Table of Contents

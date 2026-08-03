@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import InteractiveQuestionnaire, User, UserInteractiveQuestionnaire
+from app.db.models import AuthActions, InteractiveQuestionnaire, User, UserInteractiveQuestionnaire
 from app.models.questionnaire_models import (
     DeleteQuestionResponse,
     InteractiveQuestionnaireResponse,
@@ -162,6 +162,31 @@ class QuestionnaireService:
             current_user.id,
             len(payload_map),
         )
+
+        # ── Mark interactive_questions as completed in auth_actions ────────────
+        # Fetch or lazily create the auth_actions row and flip the flag.
+        auth_actions_result = await db.execute(
+            select(AuthActions).where(AuthActions.user_id == current_user.id)
+        )
+        auth_actions_row = auth_actions_result.scalar_one_or_none()
+
+        if auth_actions_row is None:
+            auth_actions_row = AuthActions(
+                user_id=current_user.id,
+                payment=True,
+                interactive_questions=True,
+            )
+            db.add(auth_actions_row)
+        else:
+            auth_actions_row.interactive_questions = True
+            auth_actions_row.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        logger.info(
+            "auth_actions.interactive_questions set to True for user_id=%s",
+            current_user.id,
+        )
+
         return SubmitAnswersResponse(message="Questionnaire answers submitted successfully.")
 
     async def create_question(

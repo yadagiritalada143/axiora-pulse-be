@@ -40,9 +40,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _ACCESS_TOKEN_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
-from app.db.models import RefreshSession, User
+from app.db.models import AuthActions, RefreshSession, User
 from app.models.auth_models import (
     AdminLoginResponse,
+    AuthActionsData,
     LoginSuccessResponse,
     RegisterResponse,
     ResendOTPRequest,
@@ -174,6 +175,23 @@ async def _issue_token_pair(user: User, db: AsyncSession) -> tuple[str, str]:
     return access_token, refresh_token
 
 
+async def _get_or_create_auth_actions(user_id: int, db: AsyncSession) -> AuthActions:
+    """Fetch the auth_actions row for a user, creating it with defaults on first login.
+
+    Defaults:
+        payment              = True   (assume payment completed)
+        interactive_questions = False  (onboarding not yet completed)
+    """
+    result = await db.execute(select(AuthActions).where(AuthActions.user_id == user_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = AuthActions(user_id=user_id, payment=True, interactive_questions=False)
+        db.add(row)
+        await db.flush()
+        logger.info("Created auth_actions row for user_id=%s with defaults.", user_id)
+    return row
+
+
 # ── Auth Service ───────────────────────────────────────────────────────────────
 
 class AuthService:
@@ -189,6 +207,9 @@ class AuthService:
         Raises:
             HTTPException 409 if the username is already registered.
         """
+        if isinstance(request, dict):
+            request = UserRegisterRequest(**request)
+
         username = request.username.lower().strip()
 
         existing = await _get_user_by_username(db, username)
@@ -311,6 +332,7 @@ class AuthService:
             access_token, refresh_token = await _issue_token_pair(user, db)
             logger.info("Login OTP verified via verify_otp for user id=%s (%s)", user.id, user.username)
 
+            auth_actions_row = await _get_or_create_auth_actions(user.id, db)
             actions = ["dashboard"] if user.role == "admin" else []
             return VerifyOTPResponse(
                 status="success",
@@ -321,6 +343,10 @@ class AuthService:
                 expires_in_minutes=_ACCESS_TOKEN_MINS,
                 role=user.role,
                 actions=actions,
+                auth_actions=AuthActionsData(
+                    payment=auth_actions_row.payment,
+                    interactive_questions=auth_actions_row.interactive_questions,
+                ),
             )
 
         else:  # flow == "register"
@@ -406,11 +432,10 @@ class AuthService:
 
             otp = generate_otp()
             expiry = otp_expiry()
-
             user.login_otp = otp
             user.login_otp_expiry = expiry
-
             logger.info("Login OTP regenerated for user id=%s (%s)", user.id, user.username)
+            await db.flush()
 
             result = await dispatch_login_otp(user.username, otp)
             if not result.success:
@@ -437,6 +462,7 @@ class AuthService:
             user.register_otp_attempts = 0
 
             logger.info("Register OTP regenerated for user id=%s (%s)", user.id, user.username)
+            await db.flush()
 
             result = await dispatch_otp(user.username, otp)
             if not result.success:
@@ -559,13 +585,18 @@ class AuthService:
 
         logger.info("Login OTP successfully verified for user id=%s. Access and Refresh tokens issued.", user.id)
 
-        actions = ["dashboard"] if user.role == "admin" else []
+        auth_actions_row = await _get_or_create_auth_actions(user.id, db)
+        actions = []
         return VerifyLoginResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in_minutes=_ACCESS_TOKEN_MINS,
             role=user.role,
             actions=actions,
+            auth_actions=AuthActionsData(
+                payment=auth_actions_row.payment,
+                interactive_questions=auth_actions_row.interactive_questions,
+            ),
         )
 
     # ── Admin Login ────────────────────────────────────────────────────────────
@@ -635,6 +666,7 @@ class AuthService:
         user.forgot_password_otp_expiry = expiry
 
         logger.info("Forgot password OTP generated for user id=%s (%s)", user.id, user.username)
+        await db.flush()
 
         # Dispatch OTP
         result = await dispatch_password_reset_otp(username, otp)

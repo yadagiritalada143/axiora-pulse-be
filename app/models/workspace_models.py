@@ -7,7 +7,8 @@ Endpoints covered:
   POST   /api/v1/workspaces                        → CreateWorkspaceRequest → WorkspaceResponse
   GET    /api/v1/workspaces                        → WorkspaceListResponse
   GET    /api/v1/workspaces/{id}                   → WorkspaceResponse
-  DELETE /api/v1/workspaces/{id}                   → DeleteWorkspaceResponse
+  DELETE /api/v1/workspaces/{id}                   → DeleteWorkspaceResponse (archives, is_delete=true)
+  PATCH  /api/v1/workspaces/{id}/restore           → RestoreWorkspaceResponse (is_delete=false)
   POST   /api/v1/workspaces/{id}/chat              → WorkspaceChatRequest   → WorkspaceChatResponse
   GET    /api/v1/workspaces/{id}/state             → WorkspaceStateResponse
   POST   /api/v1/workspaces/{id}/reset             → WorkspaceStateResponse
@@ -53,6 +54,7 @@ class WorkspaceResponse(BaseModel):
     name: str
     description: Optional[str] = None
     state: str = "GATHERING_INFO"
+    is_delete: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -76,6 +78,7 @@ class WorkspaceStateResponse(BaseModel):
     idea: Dict[str, Any] = Field(default_factory=dict)
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     validation_result: Optional[Dict[str, Any]] = None
+    is_delete: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -93,7 +96,16 @@ class WorkspaceChatResponse(BaseModel):
 
 
 class DeleteWorkspaceResponse(BaseModel):
-    """Returned after a successful workspace deletion."""
+    """Returned after a workspace is archived (soft-deleted)."""
     status: str = "success"
-    message: str = "Workspace deleted successfully."
+    message: str = "Workspace archived successfully."
     workspace_id: int
+    is_delete: bool = True
+
+
+class RestoreWorkspaceResponse(BaseModel):
+    """Returned after a workspace is restored from the archive."""
+    status: str = "success"
+    message: str = "Workspace restored successfully."
+    workspace_id: int
+    is_delete: bool = False

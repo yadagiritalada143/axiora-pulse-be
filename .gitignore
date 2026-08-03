@@ -159,3 +159,4 @@ __pycache__/
 #Test coverage
 .coverage
 pytest.ini
+coverage.xml

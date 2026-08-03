@@ -16,7 +16,8 @@ Routes:
   GET    /api/v1/workspaces/user/{user_id}         → get_workspaces_by_user_id
   GET    /api/v1/workspaces/{id}                   → get_workspace
   PUT    /api/v1/workspaces/{id}                   → update_workspace
-  DELETE /api/v1/workspaces/{id}                   → delete_workspace
+  DELETE /api/v1/workspaces/{id}                   → delete_workspace (archives, is_delete=true)
+  PATCH  /api/v1/workspaces/{id}/restore           → restore_workspace (is_delete=false)
   POST   /api/v1/workspaces/{id}/chat              → chat_workspace_mentor
   GET    /api/v1/workspaces/{id}/state             → get_workspace_state
   POST   /api/v1/workspaces/{id}/reset             → reset_workspace_mentor
@@ -32,7 +33,9 @@ from app.db.database import get_db
 from app.db.models import User
 from app.models.workspace_models import (
     CreateWorkspaceRequest,
+    DeleteWorkspaceResponse,
     ExportWorkspaceReportRequest,
+    RestoreWorkspaceResponse,
     UpdateWorkspaceRequest,
     WorkspaceChatRequest,
     WorkspaceChatResponse,
@@ -71,15 +74,16 @@ async def create_workspace(
     response_model=WorkspaceListResponse,
     status_code=status.HTTP_200_OK,
     summary="List all workspaces for the current user",
-    description="Returns all workspaces owned by the authenticated user.",
+    description="Returns all workspaces owned by the authenticated user, filtered by is_delete (default false = active workspaces).",
 )
 @limiter.limit("60/minute")
 async def list_workspaces(
     request: Request,
+    is_delete: bool = Query(False, description="Filter by archive status: false = active, true = archived"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> WorkspaceListResponse:
-    return await workspace_service.list_workspaces(current_user, db)
+    return await workspace_service.list_workspaces(current_user, db, is_delete)
 
 
 # ── Get Workspaces by User ID ─────────────────────────────────────────
@@ -89,16 +93,17 @@ async def list_workspaces(
     response_model=WorkspaceListResponse,
     status_code=status.HTTP_200_OK,
     summary="Get all workspaces for a specific user ID",
-    description="Returns all workspaces belonging to the given user_id.",
+    description="Returns all workspaces belonging to the given user_id, filtered by is_delete (default false = active workspaces).",
 )
 @limiter.limit("60/minute")
 async def get_workspaces_by_user_id(
     request: Request,
     user_id: int,
+    is_delete: bool = Query(False, description="Filter by archive status: false = active, true = archived"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> WorkspaceListResponse:
-    return await workspace_service.get_workspaces_by_user_id(user_id, current_user, db)
+    return await workspace_service.get_workspaces_by_user_id(user_id, current_user, db, is_delete)
 
 
 # ── Get Workspace by ID ───────────────────────────────────────────────────────
@@ -120,7 +125,7 @@ async def get_workspace(
     return await workspace_service.get_workspace(workspace_id, current_user, db)
 
 
-# ── Update Workspace ────────────────────────────────────────────────────────
+# Update Workspace 
 
 @router.put(
     "/{workspace_id}",
@@ -140,13 +145,14 @@ async def update_workspace(
     return await workspace_service.update_workspace(workspace_id, payload, current_user, db)
 
 
-# ── Delete Workspace ──────────────────────────────────────────────────────────
+# Delete (Archive) Workspace 
 
 @router.delete(
     "/{workspace_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a workspace by ID",
-    description="Permanently deletes a workspace and all associated data.",
+    response_model=DeleteWorkspaceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Archive a workspace by ID",
+    description="Soft-deletes a workspace by setting is_delete=true. Use the restore endpoint to undo.",
 )
 @limiter.limit("20/minute")
 async def delete_workspace(
@@ -154,11 +160,30 @@ async def delete_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
-    await workspace_service.delete_workspace(workspace_id, current_user, db)
+) -> DeleteWorkspaceResponse:
+    return await workspace_service.delete_workspace(workspace_id, current_user, db)
 
 
-# ── Workspace AI Mentor Chat Sub-resource ───────────────────────────────────────
+# Restore Workspace 
+
+@router.patch(
+    "/{workspace_id}/restore",
+    response_model=RestoreWorkspaceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Restore an archived workspace by ID",
+    description="Restores a previously archived workspace by setting is_delete=false.",
+)
+@limiter.limit("20/minute")
+async def restore_workspace(
+    request: Request,
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RestoreWorkspaceResponse:
+    return await workspace_service.restore_workspace(workspace_id, current_user, db)
+
+
+# Workspace AI Mentor Chat Sub-resource 
 
 @router.post(
     "/{workspace_id}/chat",
@@ -178,7 +203,7 @@ async def chat_workspace_mentor(
     return await workspace_service.process_mentor_chat(workspace_id, payload, current_user, db)
 
 
-# ── Workspace Full State Sub-resource ───────────────────────────────────────────
+# ── Workspace Full State Sub-resource ──────────────────────────────────────────
 
 @router.get(
     "/{workspace_id}/state",

@@ -34,6 +34,7 @@ class MockLLMGateway:
                 success=True,
                 content=self.response_content,
                 model="test-model",
+                provider="test-provider",
                 tokens_input=150,
                 tokens_output=200,
                 total_tokens=350,
@@ -42,6 +43,7 @@ class MockLLMGateway:
             success=False,
             error="Mock LLM Failure",
             model="test-model",
+            provider="test-provider",
         )
 
 
@@ -176,7 +178,7 @@ async def test_mcp_tools():
     }
     res1 = await mcp_host.handle_request(req1)
     assert res1.get("id") == 1001
-    assert res1["result"]["idea_id"] == "idea_123"
+    assert res1["result"]["idea"]["title"] == "AI Idea Validation Workspace"
     logger.info("✓ Test 3.1 Passed: MCP Host handled get_idea_details.")
 
     req2 = {

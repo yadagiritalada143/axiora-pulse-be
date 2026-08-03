@@ -8,7 +8,8 @@ Operations:
   list_workspaces()              → Fetch all workspaces belonging to the current user.
   get_workspace()                → Fetch a single workspace by ID (owner-enforced).
   get_workspaces_by_user_id()    → Fetch all workspaces for a given user_id (self-service enforced).
-  delete_workspace()             → Hard-delete a workspace by ID (owner-enforced).
+  delete_workspace()             → Archive (soft-delete) a workspace by ID (owner-enforced).
+  restore_workspace()            → Restore an archived workspace by ID (owner-enforced).
   process_mentor_chat()          → Process AI Mentor message in a workspace (owner-enforced).
   get_workspace_state()          → Fetch full workspace dialogue & validation state (owner-enforced).
   reset_workspace_mentor()       → Reset mentor dialogue for a workspace (owner-enforced).
@@ -25,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import User, Workspace
 from app.models.workspace_models import (
     CreateWorkspaceRequest,
+    DeleteWorkspaceResponse,
+    RestoreWorkspaceResponse,
     UpdateWorkspaceRequest,
     WorkspaceChatRequest,
     WorkspaceChatResponse,
@@ -67,6 +70,7 @@ class WorkspaceService:
             },
             conversation_history=[],
             validation_result=None,
+            is_delete=False,
             created_at=now,
             updated_at=now,
         )
@@ -87,11 +91,12 @@ class WorkspaceService:
         self,
         current_user: User,
         db: AsyncSession,
+        is_delete: bool = False,
     ) -> WorkspaceListResponse:
-        """Return all workspaces owned by current_user."""
+        """Return all workspaces owned by current_user, filtered by is_delete."""
         result = await db.execute(
             select(Workspace)
-            .where(Workspace.user_id == current_user.id)
+            .where(Workspace.user_id == current_user.id, Workspace.is_delete == is_delete)
             .order_by(Workspace.created_at.desc())
         )
         workspaces = result.scalars().all()
@@ -145,8 +150,9 @@ class WorkspaceService:
         user_id: int,
         current_user: User,
         db: AsyncSession,
+        is_delete: bool = False,
     ) -> WorkspaceListResponse:
-        """Return all workspaces for a given user_id."""
+        """Return all workspaces for a given user_id, filtered by is_delete."""
         if user_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -155,7 +161,7 @@ class WorkspaceService:
 
         result = await db.execute(
             select(Workspace)
-            .where(Workspace.user_id == user_id)
+            .where(Workspace.user_id == user_id, Workspace.is_delete == is_delete)
             .order_by(Workspace.created_at.desc())
         )
         workspaces = result.scalars().all()
@@ -165,22 +171,63 @@ class WorkspaceService:
             workspaces=[WorkspaceResponse.model_validate(w) for w in workspaces],
         )
 
-    # ── Delete ────────────────────────────────────────────────────────────────
+    # ── Delete (Archive) ─────────────────────────────────────────────────────
 
     async def delete_workspace(
         self,
         workspace_id: int,
         current_user: User,
         db: AsyncSession,
-    ) -> None:
-        """Hard-delete a workspace — 404 if not found, 403 if not owner."""
-        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+    ) -> DeleteWorkspaceResponse:
+        """Soft-delete (archive) a workspace by setting is_delete=True — 404/403 enforced."""
+        workspace = await self._fetch_owned_workspace(
+            workspace_id, current_user, db, require_active=False
+        )
 
-        await db.delete(workspace)
+        if workspace.is_delete:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace {workspace_id} is already archived.",
+            )
+
+        workspace.is_delete = True
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
         logger.info(
-            "Workspace deleted: id=%s user_id=%s",
+            "Workspace archived: id=%s user_id=%s",
             workspace_id, current_user.id,
         )
+        return DeleteWorkspaceResponse(workspace_id=workspace_id, is_delete=True)
+
+    # ── Restore ───────────────────────────────────────────────────────────────
+
+    async def restore_workspace(
+        self,
+        workspace_id: int,
+        current_user: User,
+        db: AsyncSession,
+    ) -> RestoreWorkspaceResponse:
+        """Restore an archived workspace by setting is_delete=False — 404/403 enforced."""
+        workspace = await self._fetch_owned_workspace(
+            workspace_id, current_user, db, require_active=False
+        )
+
+        if not workspace.is_delete:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace {workspace_id} is not archived.",
+            )
+
+        workspace.is_delete = False
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        logger.info(
+            "Workspace restored: id=%s user_id=%s",
+            workspace_id, current_user.id,
+        )
+        return RestoreWorkspaceResponse(workspace_id=workspace_id, is_delete=False)
 
     # ── Mentor Chat Sub-resource ──────────────────────────────────────────────
 
@@ -319,8 +366,14 @@ class WorkspaceService:
         workspace_id: int,
         current_user: User,
         db: AsyncSession,
+        require_active: bool = True,
     ) -> Workspace:
-        """Fetch a workspace and enforce ownership."""
+        """Fetch a workspace and enforce ownership.
+
+        By default, archived workspaces (is_delete=True) are treated as not found —
+        callers that need to see archived workspaces (delete-already-archived check,
+        restore, list-archived) must pass require_active=False explicitly.
+        """
         result = await db.execute(
             select(Workspace).where(Workspace.id == workspace_id)
         )
@@ -336,6 +389,12 @@ class WorkspaceService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this workspace.",
+            )
+
+        if require_active and workspace.is_delete:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace {workspace_id} not found.",
             )
 
         return workspace

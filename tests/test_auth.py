@@ -3,14 +3,27 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import status
+from fastapi import HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from httpx import AsyncClient
 from jose import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import get_current_user
 from app.core.security import hash_password_async, verify_password_async
 from app.db.models import User
+from app.models.auth_models import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResetRequest,
+    ForgotPasswordVerifyRequest,
+    ResendOTPRequest,
+    UserLoginRequest,
+    VerifyLoginRequest,
+    VerifyOTPRequest,
+)
+from app.services.auth_service import auth_service, seed_admin_user
 from app.services.email_service import OTPResult
 
 
@@ -440,7 +453,7 @@ async def test_forgot_password_reset_updates_hash_and_revokes_old_access_token(
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["status"] == "success"
-    assert data["message"] == "Password has been reset successfully. Please log in with your new password."
+    assert data["message"] == "Password has been reset successfully."
     await db_session.refresh(user)
     assert user.password != old_hash
     assert await verify_password_async("NewPass@12345", user.password)
@@ -489,3 +502,328 @@ async def test_forgot_password_reset_rejects_invalid_and_expired_tokens(
         json={"reset_token": expired_reset_token, "new_password": "NewPass@12345"},
     )
     assert expired_response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_seed_admin_user_creates_and_updates_default_admin(db_session: AsyncSession):
+    await seed_admin_user(db_session)
+    admin = await get_user_by_username(db_session, "admin@axiorapulse.com")
+    assert admin is not None
+    assert admin.role == "admin"
+    assert admin.register_mfa is True
+    assert await verify_password_async("Test@12345", admin.password)
+
+    admin.password = await hash_password_async("OldPass@12345")
+    admin.role = "user"
+    admin.register_mfa = False
+    await db_session.commit()
+
+    await seed_admin_user(db_session)
+    await db_session.refresh(admin)
+    assert admin.role == "admin"
+    assert admin.register_mfa is True
+    assert await verify_password_async("Test@12345", admin.password)
+
+
+@pytest.mark.asyncio
+async def test_register_keeps_user_when_otp_dispatch_fails(db_session: AsyncSession):
+    with patch(
+        "app.services.auth_service.dispatch_otp",
+        new=AsyncMock(return_value=OTPResult(success=False, channel="email", error="smtp down")),
+    ):
+        response = await auth_service.register(
+            request={"username": "dispatch-fail@axiorapulse.com", "password": "Test@12345"},
+            db=db_session,
+        )
+
+    assert response.username == "dispatch-fail@axiorapulse.com"
+    saved = await get_user_by_username(db_session, response.username)
+    assert saved is not None
+    assert saved.register_otp is not None
+
+
+@pytest.mark.asyncio
+async def test_verify_registration_otp_without_active_code_returns_failed(db_session: AsyncSession):
+    user = await create_user(
+        db_session,
+        username="no-active-register-otp@axiorapulse.com",
+        register_mfa=False,
+    )
+
+    response = await auth_service.verify_otp(
+        VerifyOTPRequest(id=user.id, otp=123456, flow="register"),
+        db_session,
+    )
+
+    assert response.status == "failed"
+    assert response.message == "OTP is wrong"
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_success_and_failure_paths(db_session: AsyncSession):
+    user = await create_user(
+        db_session,
+        username="resend@axiorapulse.com",
+        register_mfa=False,
+    )
+
+    with patch(
+        "app.services.auth_service.dispatch_otp",
+        new=AsyncMock(return_value=successful_otp_result()),
+    ) as dispatch_otp:
+        response = await auth_service.resend_otp(
+            ResendOTPRequest(id=user.id, flow="register"),
+            db_session,
+        )
+
+    assert response.userid == user.id
+    await db_session.refresh(user)
+    await db_session.refresh(user)
+    assert user.register_otp is not None
+    dispatch_otp.assert_awaited_once_with(user.username, user.register_otp)
+
+    verified_user = await create_user(
+        db_session,
+        username="resend-verified@axiorapulse.com",
+        register_mfa=True,
+    )
+    with pytest.raises(HTTPException) as verified_exc:
+        await auth_service.resend_otp(
+            ResendOTPRequest(id=verified_user.id, flow="register"),
+            db_session,
+        )
+    assert verified_exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+    failing_user = await create_user(
+        db_session,
+        username="resend-dispatch-fail@axiorapulse.com",
+        register_mfa=False,
+    )
+    with patch(
+        "app.services.auth_service.dispatch_otp",
+        new=AsyncMock(return_value=OTPResult(success=False, channel="email", error="delivery failed")),
+    ):
+        with pytest.raises(HTTPException) as dispatch_exc:
+            await auth_service.resend_otp(
+                ResendOTPRequest(id=failing_user.id, flow="register"),
+                db_session,
+            )
+    assert dispatch_exc.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_login_dispatch_failure_returns_bad_gateway(db_session: AsyncSession):
+    user = await create_user(db_session, username="login-dispatch-fail@axiorapulse.com")
+
+    with patch(
+        "app.services.auth_service.dispatch_login_otp",
+        new=AsyncMock(return_value=OTPResult(success=False, channel="email", error="email failed")),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await auth_service.login(
+                UserLoginRequest(username=user.username, password="Test@12345"),
+                db_session,
+            )
+
+    assert exc.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_verify_login_not_found_and_no_active_otp(db_session: AsyncSession):
+    with pytest.raises(HTTPException) as not_found_exc:
+        await auth_service.verify_login(
+            VerifyLoginRequest(emailOrMobile="missing@axiorapulse.com", otp=123456),
+            db_session,
+        )
+    assert not_found_exc.value.status_code == status.HTTP_404_NOT_FOUND
+
+    user = await create_user(db_session, username="login-no-otp@axiorapulse.com")
+    with pytest.raises(HTTPException) as no_otp_exc:
+        await auth_service.verify_login(
+            VerifyLoginRequest(emailOrMobile=user.username, otp=123456),
+            db_session,
+        )
+    assert no_otp_exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_admin_login_rejects_invalid_credentials_and_non_admin(db_session: AsyncSession):
+    user = await create_user(db_session, username="not-admin@axiorapulse.com")
+
+    with pytest.raises(HTTPException) as wrong_password_exc:
+        await auth_service.admin_login(
+            UserLoginRequest(username=user.username, password="Wrong@12345"),
+            db_session,
+        )
+    assert wrong_password_exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    with pytest.raises(HTTPException) as non_admin_exc:
+        await auth_service.admin_login(
+            UserLoginRequest(username=user.username, password="Test@12345"),
+            db_session,
+        )
+    assert non_admin_exc.value.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_request_not_found_and_dispatch_failure(db_session: AsyncSession):
+    with pytest.raises(HTTPException) as missing_exc:
+        await auth_service.forgot_password_request(
+            ForgotPasswordRequest(emailOrMobile="missing-reset@axiorapulse.com"),
+            db_session,
+        )
+    assert missing_exc.value.status_code == status.HTTP_404_NOT_FOUND
+
+    user = await create_user(db_session, username="reset-dispatch-fail@axiorapulse.com")
+    with patch(
+        "app.services.auth_service.dispatch_password_reset_otp",
+        new=AsyncMock(return_value=OTPResult(success=False, channel="email", error="smtp failed")),
+    ):
+        response = await auth_service.forgot_password_request(
+            ForgotPasswordRequest(emailOrMobile=user.username),
+            db_session,
+        )
+    assert response.status == "success"
+    await db_session.refresh(user)
+    assert user.forgot_password_otp is not None
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_verify_not_found_and_no_active_code(db_session: AsyncSession):
+    with pytest.raises(HTTPException) as missing_exc:
+        await auth_service.forgot_password_verify(
+            ForgotPasswordVerifyRequest(emailOrMobile="missing-verify@axiorapulse.com", code=123456),
+            db_session,
+        )
+    assert missing_exc.value.status_code == status.HTTP_404_NOT_FOUND
+
+    user = await create_user(db_session, username="reset-no-code@axiorapulse.com")
+    with pytest.raises(HTTPException) as no_code_exc:
+        await auth_service.forgot_password_verify(
+            ForgotPasswordVerifyRequest(emailOrMobile=user.username, code=123456),
+            db_session,
+        )
+    assert no_code_exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_reset_rejects_token_without_subject_and_unknown_user(
+    db_session: AsyncSession,
+):
+    no_subject_token = jwt.encode(
+        {
+            "username": "no-sub@axiorapulse.com",
+            "scope": "password_reset",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=10),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+    with pytest.raises(HTTPException) as no_subject_exc:
+        await auth_service.forgot_password_reset(
+            ForgotPasswordResetRequest(reset_token=no_subject_token, new_password="NewPass@12345"),
+            db_session,
+        )
+    assert no_subject_exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    unknown_user_token = jwt.encode(
+        {
+            "sub": "999999",
+            "username": "unknown@axiorapulse.com",
+            "scope": "password_reset",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=10),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+    with pytest.raises(HTTPException) as unknown_user_exc:
+        await auth_service.forgot_password_reset(
+            ForgotPasswordResetRequest(reset_token=unknown_user_token, new_password="NewPass@12345"),
+            db_session,
+        )
+    assert unknown_user_exc.value.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_change_password_success_and_failure(db_session: AsyncSession):
+    user = await create_user(db_session, username="change-password@axiorapulse.com")
+
+    with pytest.raises(HTTPException) as wrong_current_exc:
+        await auth_service.change_password(
+            user,
+            ChangePasswordRequest(current_password="Wrong@12345", new_password="NewPass@12345"),
+            db_session,
+        )
+    assert wrong_current_exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    response = await auth_service.change_password(
+        user,
+        ChangePasswordRequest(current_password="Test@12345", new_password="NewPass@12345"),
+        db_session,
+    )
+    assert response.status == "success"
+    assert await verify_password_async("NewPass@12345", user.password)
+    assert user.password_changed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_validates_tokens_and_revocation(db_session: AsyncSession):
+    user = await create_user(db_session, username="dependency@axiorapulse.com")
+    token = jwt.encode(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=30),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+    assert (
+        await get_current_user(
+            auth_credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token),
+            db=db_session,
+        )
+    ).id == user.id
+
+    with pytest.raises(HTTPException):
+        await get_current_user(
+            auth_credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"),
+            db=db_session,
+        )
+
+    reset_scoped_token = jwt.encode(
+        {
+            "sub": str(user.id),
+            "scope": "password_reset",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=30),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+    with pytest.raises(HTTPException):
+        await get_current_user(
+            auth_credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=reset_scoped_token),
+            db=db_session,
+        )
+
+    revoked_token = jwt.encode(
+        {
+            "sub": str(user.id),
+            "iat": datetime.now(tz=timezone.utc) - timedelta(minutes=10),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=30),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+    user.password_changed_at = datetime.now(tz=timezone.utc)
+    await db_session.commit()
+    with pytest.raises(HTTPException) as revoked_exc:
+        await get_current_user(
+            auth_credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=revoked_token),
+            db=db_session,
+        )
+    assert revoked_exc.value.status_code == status.HTTP_401_UNAUTHORIZED

@@ -21,6 +21,16 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# ── Path fix — ensure `app` package is importable regardless of cwd ──────
+import sys
+from pathlib import Path
+
+# Insert the backend directory (parent of this alembic/ dir) at the front of
+# sys.path so that `from app.db.models import Base` always resolves correctly.
+_backend_dir = str(Path(__file__).resolve().parents[1])
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
 # ── Load environment and models ──────────────────────────────────────────
 load_dotenv()
 from app.db.models import Base  # noqa: F401 – registers all ORM models
