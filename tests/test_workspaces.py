@@ -219,5 +219,150 @@ async def test_workspace_owner_can_get_update_and_delete_workspace(
     assert update_response.json()["description"] is None
 
     delete_response = await client.delete(f"/api/v1/workspaces/{workspace.id}")
-    assert delete_response.status_code == status.HTTP_204_NO_CONTENT
-    assert await db_session.get(Workspace, workspace.id) is None
+    assert delete_response.status_code == status.HTTP_200_OK
+    assert delete_response.json()["workspace_id"] == workspace.id
+
+    await db_session.refresh(workspace)
+    assert workspace.is_delete is True  # archived, not hard-deleted
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Archive (soft-delete) & Restore
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_archive_and_restore_workspace_flow(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-archive-flow@axiorapulse.com")
+    workspace = await create_workspace(db_session, user_id=owner.id, name="Archivable")
+    workspace_id = workspace.id
+    authenticate_as(owner)
+
+    # Active by default → visible in the active list, not the archived list
+    active_list = await client.get("/api/v1/workspaces", params={"is_delete": False})
+    assert workspace_id in [w["id"] for w in active_list.json()["workspaces"]]
+
+    # Archive it
+    archive_response = await client.delete(f"/api/v1/workspaces/{workspace_id}")
+    assert archive_response.status_code == status.HTTP_200_OK
+    body = archive_response.json()
+    assert body["workspace_id"] == workspace_id
+
+    # No longer visible in active list, but appears in archived list
+    active_list_after = await client.get("/api/v1/workspaces", params={"is_delete": False})
+    assert workspace_id not in [w["id"] for w in active_list_after.json()["workspaces"]]
+    archived_list = await client.get("/api/v1/workspaces", params={"is_delete": True})
+    assert workspace_id in [w["id"] for w in archived_list.json()["workspaces"]]
+
+    # Archived workspace is treated as not-found for direct GET
+    get_archived = await client.get(f"/api/v1/workspaces/{workspace_id}")
+    assert get_archived.status_code == status.HTTP_404_NOT_FOUND
+
+    # Restore it
+    restore_response = await client.patch(f"/api/v1/workspaces/{workspace_id}/restore")
+    assert restore_response.status_code == status.HTTP_200_OK
+    restore_body = restore_response.json()
+    assert restore_body["workspace_id"] == workspace_id
+    assert restore_body["is_delete"] is False
+
+    # Visible again in the active list and via direct GET
+    active_list_restored = await client.get("/api/v1/workspaces", params={"is_delete": False})
+    assert workspace_id in [w["id"] for w in active_list_restored.json()["workspaces"]]
+    get_restored = await client.get(f"/api/v1/workspaces/{workspace_id}")
+    assert get_restored.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.asyncio
+async def test_archive_already_archived_workspace_returns_400(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-double-archive@axiorapulse.com")
+    workspace = await create_workspace(db_session, user_id=owner.id, name="Double Archive")
+    authenticate_as(owner)
+
+    first = await client.delete(f"/api/v1/workspaces/{workspace.id}")
+    assert first.status_code == status.HTTP_200_OK
+
+    second = await client.delete(f"/api/v1/workspaces/{workspace.id}")
+    assert second.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_restore_non_archived_workspace_returns_400(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-restore-active@axiorapulse.com")
+    workspace = await create_workspace(db_session, user_id=owner.id, name="Restore Active")
+    authenticate_as(owner)
+
+    response = await client.patch(f"/api/v1/workspaces/{workspace.id}/restore")
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_archive_and_restore_enforce_ownership(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-archive-owner@axiorapulse.com")
+    intruder = await create_test_user(db_session, username="workspace-archive-intruder@axiorapulse.com")
+    workspace = await create_workspace(db_session, user_id=owner.id, name="Owned Workspace")
+    workspace_id = workspace.id
+    authenticate_as(intruder)
+
+    archive_response = await client.delete(f"/api/v1/workspaces/{workspace_id}")
+    assert archive_response.status_code == status.HTTP_403_FORBIDDEN
+
+    restore_response = await client.patch(f"/api/v1/workspaces/{workspace_id}/restore")
+    assert restore_response.status_code == status.HTTP_403_FORBIDDEN
+
+    result = await db_session.execute(select(Workspace).where(Workspace.id == workspace_id))
+    assert result.scalar_one().is_delete is False
+
+
+@pytest.mark.asyncio
+async def test_archive_nonexistent_workspace_returns_404(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-archive-404@axiorapulse.com")
+    authenticate_as(owner)
+
+    response = await client.delete("/api/v1/workspaces/999999")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_restore_nonexistent_workspace_returns_404(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-restore-404@axiorapulse.com")
+    authenticate_as(owner)
+
+    response = await client.patch("/api/v1/workspaces/999999/restore")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_defaults_to_active_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    owner = await create_test_user(db_session, username="workspace-list-default@axiorapulse.com")
+    active_ws = await create_workspace(db_session, user_id=owner.id, name="Active")
+    archived_ws = await create_workspace(db_session, user_id=owner.id, name="ArchivedSeed")
+    archived_ws.is_delete = True
+    await db_session.commit()
+    authenticate_as(owner)
+
+    response = await client.get("/api/v1/workspaces")
+
+    assert response.status_code == status.HTTP_200_OK
+    ids = [w["id"] for w in response.json()["workspaces"]]
+    assert active_ws.id in ids
+    assert archived_ws.id not in ids

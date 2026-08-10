@@ -12,6 +12,7 @@ from app.models.questionnaire_models import (
     SubmitAnswersRequestItem,
     SubmitAnswersResponse,
     SubmitQuestionRequest,
+    UpdateQuestionRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,47 @@ class QuestionnaireService:
         logger.info(
             "Questionnaire question created: id=%s by admin_user_id=%s",
             questionnaire.id,
+            current_user.id,
+        )
+        return InteractiveQuestionnaireResponse.model_validate(questionnaire)
+
+    async def update_question(
+        self,
+        question_id: int,
+        payload: UpdateQuestionRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> InteractiveQuestionnaireResponse:
+        """Update an existing interactive questionnaire question for admins."""
+        if current_user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin privileges required.",
+            )
+
+        questionnaire = await db.get(InteractiveQuestionnaire, question_id)
+        if questionnaire is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Questionnaire question not found.",
+            )
+
+        if payload.question is not None:
+            questionnaire.question = payload.question.strip()
+        if payload.answer_type is not None:
+            questionnaire.answer_type = payload.answer_type
+        if payload.optional is not None:
+            questionnaire.optional = payload.optional
+        if payload.answers is not None:
+            questionnaire.answers = list(payload.answers)
+
+        questionnaire.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+        await db.refresh(questionnaire)
+
+        logger.info(
+            "Questionnaire question updated: id=%s by admin_user_id=%s",
+            question_id,
             current_user.id,
         )
         return InteractiveQuestionnaireResponse.model_validate(questionnaire)

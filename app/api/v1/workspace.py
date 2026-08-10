@@ -6,7 +6,7 @@ Workspace router — CRUD and workspace-owned sub-resources:
   - Send message to AI Mentor in workspace
   - Get full workspace dialogue state & validation results
   - Reset workspace conversation state
-  - Export PDF/Doc reports per agent for workspace
+  - Export template-based PDF reports per agent for workspace
 
 All endpoints require a valid JWT Bearer token (get_current_user dependency).
 
@@ -17,6 +17,7 @@ Routes:
   GET    /api/v1/workspaces/{id}                   → get_workspace
   PUT    /api/v1/workspaces/{id}                   → update_workspace
   DELETE /api/v1/workspaces/{id}                   → delete_workspace (archives, is_delete=true)
+  DELETE /api/v1/workspaces/{id}/permanent         → hard_delete_workspace (irreversible)
   PATCH  /api/v1/workspaces/{id}/restore           → restore_workspace (is_delete=false)
   POST   /api/v1/workspaces/{id}/chat              → chat_workspace_mentor
   GET    /api/v1/workspaces/{id}/state             → get_workspace_state
@@ -24,7 +25,7 @@ Routes:
   GET    /api/v1/workspaces/{id}/reports/{agent}   → download_workspace_agent_report
   POST   /api/v1/workspaces/{id}/reports/export    → export_workspace_report
 """
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, UploadFile, File, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
@@ -33,10 +34,16 @@ from app.db.database import get_db
 from app.db.models import User
 from app.models.workspace_models import (
     CreateWorkspaceRequest,
+    DeleteAttachmentResponse,
     DeleteWorkspaceResponse,
     ExportWorkspaceReportRequest,
+    HardDeleteWorkspaceResponse,
     RestoreWorkspaceResponse,
     UpdateWorkspaceRequest,
+    UpdateWorkspaceSurveyQuestionsRequest,
+    UpdateWorkspaceSurveyQuestionsResponse,
+    WorkspaceAttachmentListResponse,
+    WorkspaceAttachmentResponse,
     WorkspaceChatRequest,
     WorkspaceChatResponse,
     WorkspaceListResponse,
@@ -44,6 +51,7 @@ from app.models.workspace_models import (
     WorkspaceStateResponse,
 )
 from app.services.workspace_service import workspace_service
+from app.services.workspace_attachment_service import workspace_attachment_service
 
 router = APIRouter(prefix="/workspaces", tags=["Workspaces"])
 
@@ -164,7 +172,29 @@ async def delete_workspace(
     return await workspace_service.delete_workspace(workspace_id, current_user, db)
 
 
-# Restore Workspace 
+# Permanently Delete Workspace
+
+@router.delete(
+    "/{workspace_id}/permanent",
+    response_model=HardDeleteWorkspaceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Permanently delete a workspace by ID",
+    description=(
+        "Irreversibly deletes a workspace and all associated data (attachments, surveys). "
+        "This cannot be undone. Use DELETE /{workspace_id} to archive instead if you may want to restore it later."
+    ),
+)
+@limiter.limit("10/minute")
+async def hard_delete_workspace(
+    request: Request,
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> HardDeleteWorkspaceResponse:
+    return await workspace_service.hard_delete_workspace(workspace_id, current_user, db)
+
+
+# Restore Workspace
 
 @router.patch(
     "/{workspace_id}/restore",
@@ -246,14 +276,14 @@ async def reset_workspace_mentor(
 @router.get(
     "/{workspace_id}/reports/{agent_name}",
     summary="Download agent report for a workspace",
-    description="Generates and downloads a report for a specific agent (idea_validation_agent, market_research_agent, or full) from a workspace.",
+    description="Generates and downloads a template-based PDF report for a specific agent (idea_validation_agent, market_research_agent, or full) from a workspace.",
 )
 @limiter.limit("30/minute")
 async def download_workspace_agent_report(
     request: Request,
     workspace_id: int,
     agent_name: str,
-    format: str = Query("pdf", description="Export format: pdf or doc"),
+    format: str = Query("pdf", description="Export format. PDF is the only supported report output."),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -263,7 +293,7 @@ async def download_workspace_agent_report(
 @router.post(
     "/{workspace_id}/reports/export",
     summary="Export agent report for a workspace via POST",
-    description="Generates and downloads an agent report (PDF or Doc) for the workspace.",
+    description="Generates and downloads a template-based PDF agent report for the workspace.",
 )
 @limiter.limit("30/minute")
 async def export_workspace_report(
@@ -279,4 +309,127 @@ async def export_workspace_report(
         export_format=payload.format,
         current_user=current_user,
         db=db
+    )
+
+
+# ── Update Workspace Survey Questions (User Session) ─────────────────────────
+
+@router.put(
+    "/{workspace_id}/survey/questions",
+    response_model=UpdateWorkspaceSurveyQuestionsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update survey questions for a workspace during active user session",
+    description="Allows regular logged-in users to edit, reorder, or customize the survey questions created for their workspace.",
+)
+@limiter.limit("30/minute")
+async def update_workspace_survey_questions(
+    request: Request,
+    workspace_id: int,
+    payload: UpdateWorkspaceSurveyQuestionsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UpdateWorkspaceSurveyQuestionsResponse:
+    return await workspace_service.update_workspace_survey_questions(
+        workspace_id=workspace_id,
+        payload=payload,
+        current_user=current_user,
+        db=db
+    )
+
+
+# ── Workspace File Attachments Sub-resource ────────────────────────────────────
+
+@router.post(
+    "/{workspace_id}/attachments",
+    response_model=WorkspaceAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a file to a workspace",
+    description=(
+        "Uploads a file (image, PDF, or document) to the workspace's dedicated S3 path. "
+        "Accepted MIME types: image/*, application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+        "text/plain, text/markdown, text/csv."
+    ),
+)
+@limiter.limit("30/minute")
+async def upload_workspace_attachment(
+    request: Request,
+    workspace_id: int,
+    file: UploadFile = File(..., description="File to upload (image, PDF, or doc)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceAttachmentResponse:
+    return await workspace_attachment_service.upload_file(
+        workspace_id=workspace_id,
+        current_user=current_user,
+        file=file,
+        db=db,
+    )
+
+
+@router.get(
+    "/{workspace_id}/attachments",
+    response_model=WorkspaceAttachmentListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List all uploaded files for a workspace",
+    description="Returns all uploaded files for the workspace, optionally filtered by type (image | pdf | doc).",
+)
+@limiter.limit("60/minute")
+async def list_workspace_attachments(
+    request: Request,
+    workspace_id: int,
+    file_type: str = Query(None, description="Filter by file type: image | pdf | doc"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceAttachmentListResponse:
+    return await workspace_attachment_service.list_attachments(
+        workspace_id=workspace_id,
+        current_user=current_user,
+        db=db,
+        file_type=file_type,
+    )
+
+
+@router.get(
+    "/{workspace_id}/attachments/{attachment_id}",
+    response_model=WorkspaceAttachmentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a single workspace attachment record",
+    description="Fetches the metadata for a single uploaded file by its ID.",
+)
+@limiter.limit("60/minute")
+async def get_workspace_attachment(
+    request: Request,
+    workspace_id: int,
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceAttachmentResponse:
+    return await workspace_attachment_service.get_attachment(
+        workspace_id=workspace_id,
+        attachment_id=attachment_id,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.delete(
+    "/{workspace_id}/attachments/{attachment_id}",
+    response_model=DeleteAttachmentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Delete a workspace attachment",
+    description="Permanently deletes a file from S3 and removes its database record.",
+)
+@limiter.limit("30/minute")
+async def delete_workspace_attachment(
+    request: Request,
+    workspace_id: int,
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DeleteAttachmentResponse:
+    return await workspace_attachment_service.delete_attachment(
+        workspace_id=workspace_id,
+        attachment_id=attachment_id,
+        current_user=current_user,
+        db=db,
     )

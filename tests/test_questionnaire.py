@@ -92,6 +92,94 @@ async def test_create_question_non_admin_forbidden(client: AsyncClient, normal_u
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Update Question Route & Service Tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_question_success(client: AsyncClient, admin_user: User, db_session: AsyncSession):
+    question = InteractiveQuestionnaire(
+        question="Original text", answer_type="textarea", optional=True, answers=[]
+    )
+    db_session.add(question)
+    await db_session.commit()
+    await db_session.refresh(question)
+
+    async def mock_admin_user():
+        return admin_user
+
+    from main import app
+    app.dependency_overrides[get_current_user] = mock_admin_user
+
+    response = await client.put(
+        f"/api/v1/admin/questionnaire/update-question/{question.id}",
+        json={"question": "Updated text", "optional": False},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["question"] == "Updated text"
+    assert data["optional"] is False
+    assert data["answer_type"] == "textarea"  # untouched field kept as-is
+
+
+@pytest.mark.asyncio
+async def test_update_question_not_found(client: AsyncClient, admin_user: User):
+    async def mock_admin_user():
+        return admin_user
+
+    from main import app
+    app.dependency_overrides[get_current_user] = mock_admin_user
+
+    response = await client.put(
+        "/api/v1/admin/questionnaire/update-question/999",
+        json={"question": "Doesn't matter"},
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_update_question_non_admin_forbidden(client: AsyncClient, normal_user: User):
+    async def mock_normal_user():
+        return normal_user
+
+    from main import app
+    app.dependency_overrides[get_current_user] = mock_normal_user
+
+    response = await client.put(
+        "/api/v1/admin/questionnaire/update-question/1",
+        json={"question": "Doesn't matter"},
+    )
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_update_question_updates_answer_type_and_answers(
+    client: AsyncClient, admin_user: User, db_session: AsyncSession
+):
+    question = InteractiveQuestionnaire(
+        question="Pick one", answer_type="dropdown", optional=False, answers=["A", "B"]
+    )
+    db_session.add(question)
+    await db_session.commit()
+    await db_session.refresh(question)
+
+    async def mock_admin_user():
+        return admin_user
+
+    from main import app
+    app.dependency_overrides[get_current_user] = mock_admin_user
+
+    response = await client.put(
+        f"/api/v1/admin/questionnaire/update-question/{question.id}",
+        json={"answer_type": "checkboxes", "answers": ["X", "Y", "Z"]},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["answer_type"] == "checkboxes"
+    assert data["answers"] == ["X", "Y", "Z"]
+    assert data["question"] == "Pick one"  # untouched field kept as-is
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Delete Question Route & Service Tests
 # ──────────────────────────────────────────────────────────────────────────────
 

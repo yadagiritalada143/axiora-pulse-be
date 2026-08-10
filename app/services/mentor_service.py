@@ -140,6 +140,9 @@ def _build_mentor_system_prompt(
 
 # ── Service Implementation ─────────────────────────────────────────────────────
 
+from app.models.workspace_models import AttachmentInput
+from app.services.attachment_processor import attachment_processor
+
 class MentorService:
     """Manages workspace-scoped dialogue state and LLM extraction/generation loop."""
 
@@ -153,14 +156,36 @@ class MentorService:
             self._llm = get_llm_gateway()
         return self._llm
 
-    async def process_message(self, state: WorkspaceMentorState, user_message: str) -> WorkspaceMentorState:
-        # Add user message to history
-        state.conversation_history.append({"role": "user", "content": user_message})
-        
+    async def process_message(
+        self,
+        state: WorkspaceMentorState,
+        user_message: str,
+        attachments: Optional[List[AttachmentInput]] = None,
+    ) -> WorkspaceMentorState:
+        # Process incoming attachments (PDFs via pdfplumber, Docs, Links, Images)
+        processed_attachments, attachment_text_context, image_data_uris = (
+            await attachment_processor.process_attachments(
+                attachments or [], workspace_id=state.workspace_id
+            )
+        )
+
+        # Build full content for user message including attachment context
+        full_content = user_message
+        if attachment_text_context:
+            full_content = f"{user_message}\n\n[Attached Information Context]:\n{attachment_text_context}"
+
+        # Create user message dict for conversation history
+        user_msg_record: Dict[str, Any] = {"role": "user", "content": full_content}
+        if processed_attachments:
+            user_msg_record["attachments"] = [p.model_dump() for p in processed_attachments]
+
+        state.conversation_history.append(user_msg_record)
+
         # Check for system trigger or manual validation command in text
         is_trigger_command = "[TRIGGER_VALIDATION]" in user_message or user_message.lower().strip() in (
             "run validation", "run validation analysis", "validate", "validate idea", "start validation"
         )
+
 
         if is_trigger_command and state.state == "READY_TO_VALIDATE":
             state.state = "VALIDATING"
@@ -207,7 +232,7 @@ class MentorService:
             await self._run_extraction(state)
 
         # Generate conversational response
-        await self._generate_mentor_reply(state)
+        await self._generate_mentor_reply(state, image_data_uris=image_data_uris)
         return state
 
     async def _run_extraction(self, state: WorkspaceMentorState) -> None:
@@ -248,7 +273,11 @@ class MentorService:
         except Exception as e:
             logger.warning(f"[MentorService] Extraction step failed: {e}. Continuing conversation without it.")
 
-    async def _generate_mentor_reply(self, state: WorkspaceMentorState) -> None:
+    async def _generate_mentor_reply(
+        self,
+        state: WorkspaceMentorState,
+        image_data_uris: Optional[List[str]] = None,
+    ) -> None:
         """Call LLM with current workspace state to write assistant response."""
         # Find missing required fields
         required = ["idea_title", "idea_description", "problem_statement"]
@@ -280,9 +309,11 @@ class MentorService:
             req = LLMRequest(
                 system_prompt=sys_prompt,
                 user_prompt=user_prompt,
-                temperature=0.3
+                temperature=0.3,
+                images=image_data_uris,
             )
             res = await self.llm.complete(req)
+
             if res.success and res.content:
                 reply = res.content.strip()
                 # Clean prefix "Assistant:" if model output it

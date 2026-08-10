@@ -9,11 +9,12 @@ Operations:
   get_workspace()                → Fetch a single workspace by ID (owner-enforced).
   get_workspaces_by_user_id()    → Fetch all workspaces for a given user_id (self-service enforced).
   delete_workspace()             → Archive (soft-delete) a workspace by ID (owner-enforced).
+  hard_delete_workspace()        → Permanently delete a workspace and its data (owner-enforced).
   restore_workspace()            → Restore an archived workspace by ID (owner-enforced).
   process_mentor_chat()          → Process AI Mentor message in a workspace (owner-enforced).
   get_workspace_state()          → Fetch full workspace dialogue & validation state (owner-enforced).
   reset_workspace_mentor()       → Reset mentor dialogue for a workspace (owner-enforced).
-  export_workspace_report()      → Export PDF/Doc report for a workspace (owner-enforced).
+  export_workspace_report()      → Export template-based PDF report for a workspace (owner-enforced).
 """
 import logging
 from datetime import datetime, timezone
@@ -23,12 +24,15 @@ from fastapi import HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, Workspace
+from app.db.models import User, Workspace, WorkspaceAttachment
 from app.models.workspace_models import (
     CreateWorkspaceRequest,
     DeleteWorkspaceResponse,
+    HardDeleteWorkspaceResponse,
     RestoreWorkspaceResponse,
     UpdateWorkspaceRequest,
+    UpdateWorkspaceSurveyQuestionsRequest,
+    UpdateWorkspaceSurveyQuestionsResponse,
     WorkspaceChatRequest,
     WorkspaceChatResponse,
     WorkspaceListResponse,
@@ -37,6 +41,9 @@ from app.models.workspace_models import (
 )
 from app.services.mentor_service import mentor_service, WorkspaceMentorState
 from app.services.report_service import report_service
+from app.services.s3_storage_service import s3_storage_service
+from app.services.survey_service import survey_service
+from app.services.workspace_attachment_service import workspace_attachment_service
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,8 @@ class WorkspaceService:
     ) -> WorkspaceResponse:
         """Create a new workspace owned by current_user."""
         now = datetime.now(timezone.utc)
+
+        await self._ensure_unique_name(payload.name.strip(), current_user, db)
 
         workspace = Workspace(
             user_id=current_user.id,
@@ -130,7 +139,11 @@ class WorkspaceService:
         """Update name and/or description of an owned workspace — 404/403 enforced."""
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
 
-        workspace.name = payload.name.strip()
+        new_name = payload.name.strip()
+        if new_name != workspace.name:
+            await self._ensure_unique_name(new_name, current_user, db, exclude_workspace_id=workspace_id)
+
+        workspace.name = new_name
         workspace.description = payload.description.strip() if payload.description else None
         workspace.updated_at = datetime.now(timezone.utc)
 
@@ -200,6 +213,39 @@ class WorkspaceService:
         )
         return DeleteWorkspaceResponse(workspace_id=workspace_id, is_delete=True)
 
+    # ── Hard Delete ───────────────────────────────────────────────────────────
+
+    async def hard_delete_workspace(
+        self,
+        workspace_id: int,
+        current_user: User,
+        db: AsyncSession,
+    ) -> HardDeleteWorkspaceResponse:
+        """Permanently delete a workspace and all its data — 404/403 enforced.
+
+        Removes any S3-stored attachments (best-effort), then deletes the workspace
+        row. Related workspace_attachments/surveys rows are removed via DB-level
+        ON DELETE CASCADE.
+        """
+        workspace = await self._fetch_owned_workspace(
+            workspace_id, current_user, db, require_active=False
+        )
+
+        result = await db.execute(
+            select(WorkspaceAttachment).where(WorkspaceAttachment.workspace_id == workspace_id)
+        )
+        for attachment in result.scalars().all():
+            s3_storage_service.delete_workspace_asset(attachment.s3_key)
+
+        await db.delete(workspace)
+        await db.flush()
+
+        logger.info(
+            "Workspace permanently deleted: id=%s user_id=%s",
+            workspace_id, current_user.id,
+        )
+        return HardDeleteWorkspaceResponse(workspace_id=workspace_id)
+
     # ── Restore ───────────────────────────────────────────────────────────────
 
     async def restore_workspace(
@@ -249,7 +295,12 @@ class WorkspaceService:
             validation_result=workspace.validation_result
         )
 
-        updated_state = await mentor_service.process_message(ws_state, payload.message)
+        updated_state = await mentor_service.process_message(
+            state=ws_state,
+            user_message=payload.message,
+            attachments=payload.attachments,
+        )
+
 
         # Save back to database
         workspace.state = updated_state.state
@@ -260,6 +311,29 @@ class WorkspaceService:
 
         await db.flush()
         await db.refresh(workspace)
+
+        # Auto-sync agent-generated survey questions into the `surveys` table if available
+        if workspace.validation_result:
+            await survey_service.sync_survey_from_validation_result(
+                user_id=current_user.id,
+                workspace_id=workspace.id,
+                validation_result=workspace.validation_result,
+                db=db,
+            )
+
+        # Auto-sync chat attachments (images, PDFs, docs) into workspace_attachments table
+        if payload.attachments:
+            for att in payload.attachments:
+                att_type = (att.type or "").lower().strip()
+                if att_type in ("image", "pdf", "doc") and att.url_or_data:
+                    await workspace_attachment_service.save_from_base64(
+                        workspace_id=workspace.id,
+                        user_id=current_user.id,
+                        filename=att.name or f"{att_type}_attachment",
+                        base64_data=att.url_or_data,
+                        mime_type=att.mime_type or "application/octet-stream",
+                        db=db,
+                    )
 
         assistant_reply = "I'm listening. Tell me more!"
         if updated_state.conversation_history:
@@ -335,7 +409,7 @@ class WorkspaceService:
         current_user: User,
         db: AsyncSession,
     ) -> Response:
-        """Generate and download PDF or Doc report for a workspace."""
+        """Generate and download the template-based PDF report for a workspace."""
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
 
         if not workspace.validation_result:
@@ -359,7 +433,91 @@ class WorkspaceService:
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
+    # ── Update Workspace Survey Questions (User Session) ──────────────────────
+
+    async def update_workspace_survey_questions(
+        self,
+        workspace_id: int,
+        payload: UpdateWorkspaceSurveyQuestionsRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> UpdateWorkspaceSurveyQuestionsResponse:
+        """Allow regular users to edit survey questions in their active workspace session."""
+        workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+
+        val_result = dict(workspace.validation_result or {})
+        agent_results = dict(val_result.get("agent_results") or {})
+        survey_agent_output = dict(agent_results.get("survey_intelligence_agent") or {})
+        survey_data = dict(survey_agent_output.get("data") or {})
+
+        # Convert question items to dict format
+        updated_questions = [item.model_dump(exclude_unset=True) for item in payload.questions]
+        survey_data["questions"] = updated_questions
+
+        if payload.survey_title:
+            survey_data["survey_title"] = payload.survey_title.strip()
+        if payload.survey_objective:
+            survey_data["survey_objective"] = payload.survey_objective.strip()
+
+        # Update nested dict structure
+        survey_agent_output["data"] = survey_data
+        agent_results["survey_intelligence_agent"] = survey_agent_output
+        val_result["agent_results"] = agent_results
+
+        # Reassign to trigger SQLAlchemy mutation tracking
+        workspace.validation_result = val_result
+        workspace.updated_at = datetime.now(timezone.utc)
+
+        await db.flush()
+        await db.refresh(workspace)
+
+        # Sync updated questions into `surveys` table
+        await survey_service.sync_survey_from_validation_result(
+            user_id=current_user.id,
+            workspace_id=workspace.id,
+            validation_result=workspace.validation_result,
+            db=db,
+        )
+
+        logger.info(
+            "Workspace %s survey questions updated by user_id=%s count=%s",
+            workspace_id, current_user.id, len(updated_questions)
+        )
+
+        return UpdateWorkspaceSurveyQuestionsResponse(
+            workspace_id=workspace.id,
+            survey_title=survey_data.get("survey_title"),
+            survey_objective=survey_data.get("survey_objective"),
+            questions=updated_questions,
+        )
+
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    async def _ensure_unique_name(
+        self,
+        name: str,
+        current_user: User,
+        db: AsyncSession,
+        exclude_workspace_id: Optional[int] = None,
+    ) -> None:
+        """Raise 409 if current_user already has a workspace with this name.
+
+        Checks across all workspaces regardless of archive status — an archived
+        workspace's title stays reserved until it is permanently deleted.
+        """
+        query = select(Workspace).where(
+            Workspace.user_id == current_user.id,
+            Workspace.name == name,
+        )
+        if exclude_workspace_id is not None:
+            query = query.where(Workspace.id != exclude_workspace_id)
+
+        result = await db.execute(query)
+        if result.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"You already have a workspace named '{name}'.",
+            )
 
     async def _fetch_owned_workspace(
         self,

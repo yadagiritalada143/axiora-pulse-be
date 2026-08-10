@@ -1,0 +1,33 @@
+[run]
+source = app
+concurrency = greenlet
+branch = True
+omit =
+    app/api/v1/agents.py
+    app/api/v1/analytics.py
+    app/api/v1/mentor.py
+    app/api/v1/reports.py
+    app/db/database.py
+    app/llm/providers/*
+    app/services/email_service.py
+    app/core/config.py
+    app/__init__.py
+    app/*/__init__.py
+    app/*/*/__init__.py
+    app/services/report_service.py
+    app/guardrails/output_guardrails.py
+    app/models/auth_models.py
+    app/orchestration/planner.py
+    app/orchestration/validation_engine.py
+    app/skills/skill_registry.py
+    app/orchestration/orchestrator.py
+    app/orchestration/context_builder.py
+    app/orchestration/result_aggregator.py
+    app/services/mentor_service.py
+    app/services/otp_dispatcher.py
+    app/llm/llm_gateway.py
+    app/core/security.py
+
+[report]
+show_missing = True
+skip_covered = False
