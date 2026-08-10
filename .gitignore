@@ -160,3 +160,6 @@ __pycache__/
 .coverage
 pytest.ini
 coverage.xml
+
+#uploads 
+backend/uploads

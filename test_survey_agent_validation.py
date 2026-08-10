@@ -121,6 +121,70 @@ async def test_survey_intelligence_agent():
         {
             "survey_title": "Validation Survey for AI Idea Incubator",
             "survey_objective": "Determine founder willingness to pay for rapid validation reports.",
+            "survey_context": {
+                "startup_summary": "AI Idea Incubator survey for validation hypothesis testing",
+                "validation_scope": "Demand validation and willingness to pay",
+            },
+            "validation_objectives": {
+                "research_objectives": ["Determine speed bottlenecks in validation"],
+                "learning_goals": ["Quantify validation turnaround expectations"],
+                "research_hypotheses": ["Founders spend >2 weeks on manual validation"],
+            },
+            "survey_strategy": {
+                "survey_type": "Customer Discovery",
+                "target_completion_time_minutes": 5,
+                "recommended_question_count": 5,
+                "data_collection_method": "Online self-administered questionnaire",
+                "required_confidence_level": "95%",
+            },
+            "audience_definition": {
+                "icp_summary": "Early-stage tech founders",
+                "demographics_or_firmographics": "Seed stage, 1-10 employees",
+                "eligibility_rules": ["Currently working on a tech startup"],
+                "exclusion_rules": ["Non-founders"],
+            },
+            "sampling_strategy": {
+                "recommended_sample_size": 100,
+                "sampling_method": "Purposive Sampling",
+                "confidence_level": "95%",
+                "margin_of_error": "5%",
+                "sampling_bias_risks": ["Over-indexing on tech incubators"],
+            },
+            "survey_structure": {
+                "sections": [
+                    {
+                        "section_number": 1,
+                        "section_title": "Current Workflow",
+                        "questions": [
+                            {
+                                "question_id": "Q1",
+                                "question_text": "How do you currently validate new product ideas?",
+                                "question_type": "open_ended",
+                                "options": [],
+                                "is_mandatory": True,
+                                "target_hypothesis": "Verify current manual process friction.",
+                                "skip_logic": None,
+                            }
+                        ],
+                    }
+                ]
+            },
+            "question_optimization_report": {
+                "anti_bias_checks_passed": True,
+                "improvements_made": ["Framed questions neutrally"],
+            },
+            "multilingual_support": {
+                "default_language": "English",
+                "supported_languages": ["English"],
+                "localization_notes": "Standard tech terminology",
+            },
+            "testing_report": {
+                "question_logic_check": "Passed",
+                "flow_check": "Confirmed",
+                "estimated_completion_time_minutes": 5,
+                "mobile_friendliness": "Optimized",
+                "publishing_readiness": "Ready",
+            },
             "target_audience_summary": "Early-stage tech founders",
             "questions": [
                 {
@@ -147,6 +211,12 @@ async def test_survey_intelligence_agent():
         idea_description="An AI platform that creates surveys and market reports for founders.",
         problem_statement="Founders spend weeks on market validation with low accuracy.",
         target_customer="Tech Startup Founders",
+        additional_context={
+            "problem_validation": "Validated problem statement: slow validation cycles",
+            "market_research": "TAM $5B, strong growth in developer tools",
+            "customer_intelligence": "ICP: B2B SaaS founders",
+            "business_assumptions": "Founders will pay $50/mo for instant reports",
+        },
     )
 
     output = await agent.run(agent_input)
@@ -155,6 +225,9 @@ async def test_survey_intelligence_agent():
     assert output.score == 85.0, f"Expected score 85.0, got {output.score}"
     assert output.confidence == 0.88
     assert "disclaimer" in output.data
+    assert "survey_structure" in output.data
+    assert "testing_report" in output.data
+    assert output.data["testing_report"]["publishing_readiness"] == "Ready"
     assert len(output.data["questions"]) == 2
     logger.info(f"✓ Test 2 Passed: SurveyIntelligenceAgent executed successfully with score {output.score}.")
 

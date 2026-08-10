@@ -23,6 +23,9 @@ from app.models.auth_models import (
     VerifyLoginRequest,
     VerifyOTPRequest,
 )
+from app.core.security import create_refresh_token
+from app.db.models import RefreshSession
+from app.models.auth_models import RefreshTokenRequest
 from app.services.auth_service import auth_service, seed_admin_user
 from app.services.email_service import OTPResult
 
@@ -827,3 +830,168 @@ async def test_get_current_user_validates_tokens_and_revocation(db_session: Asyn
             db=db_session,
         )
     assert revoked_exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+async def issue_refresh_session(db_session: AsyncSession, user: User, *, expires_in_days: int = 7) -> str:
+    session_id = "test-session-id"
+    db_session.add(RefreshSession(
+        id=session_id,
+        user_id=user.id,
+        expires_at=datetime.now(tz=timezone.utc) + timedelta(days=expires_in_days),
+    ))
+    await db_session.commit()
+    return create_refresh_token(data={"sub": str(user.id), "username": user.username, "sid": session_id})
+
+
+@pytest.mark.asyncio
+async def test_refresh_rotates_token_and_revokes_old_session(db_session: AsyncSession):
+    user = await create_user(db_session, username="refresh-ok@axiorapulse.com")
+    token = await issue_refresh_session(db_session, user)
+
+    response = await auth_service.refresh(RefreshTokenRequest(refresh_token=token), db_session)
+
+    assert response.data.accessToken
+    assert response.data.refreshToken
+    old_session = await db_session.get(RefreshSession, "test-session-id")
+    assert old_session.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_malformed_token(db_session: AsyncSession):
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh(RefreshTokenRequest(refresh_token="not-a-jwt"), db_session)
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_unknown_session(db_session: AsyncSession):
+    user = await create_user(db_session, username="refresh-no-session@axiorapulse.com")
+    token = create_refresh_token(data={"sub": str(user.id), "username": user.username, "sid": "does-not-exist"})
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh(RefreshTokenRequest(refresh_token=token), db_session)
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_already_revoked_session(db_session: AsyncSession):
+    user = await create_user(db_session, username="refresh-revoked@axiorapulse.com")
+    token = await issue_refresh_session(db_session, user)
+    session = await db_session.get(RefreshSession, "test-session-id")
+    session.revoked_at = datetime.now(tz=timezone.utc)
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh(RefreshTokenRequest(refresh_token=token), db_session)
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_expired_session_and_marks_it_revoked(db_session: AsyncSession):
+    user = await create_user(db_session, username="refresh-expired@axiorapulse.com")
+    token = await issue_refresh_session(db_session, user, expires_in_days=-1)
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh(RefreshTokenRequest(refresh_token=token), db_session)
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    session = await db_session.get(RefreshSession, "test-session-id")
+    assert session.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_unverified_account(db_session: AsyncSession):
+    user = await create_user(db_session, username="refresh-unverified@axiorapulse.com", register_mfa=False)
+    token = await issue_refresh_session(db_session, user)
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh(RefreshTokenRequest(refresh_token=token), db_session)
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_all_active_sessions(db_session: AsyncSession):
+    user = await create_user(db_session, username="logout@axiorapulse.com")
+    db_session.add(RefreshSession(id="s1", user_id=user.id, expires_at=datetime.now(tz=timezone.utc) + timedelta(days=7)))
+    db_session.add(RefreshSession(id="s2", user_id=user.id, expires_at=datetime.now(tz=timezone.utc) + timedelta(days=7)))
+    await db_session.commit()
+
+    response = await auth_service.logout(user, db_session)
+
+    assert response.status == "success"
+    s1 = await db_session.get(RefreshSession, "s1")
+    s2 = await db_session.get(RefreshSession, "s2")
+    assert s1.revoked_at is not None
+    assert s2.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_login_flow_rejects_unverified_account(db_session: AsyncSession):
+    user = await create_user(db_session, username="verify-login-unverified@axiorapulse.com", register_mfa=False)
+
+    response = await auth_service.verify_otp(
+        VerifyOTPRequest(id=user.id, otp=123456, flow="login"), db_session
+    )
+    assert response.status == "failed"
+    assert "not verified" in response.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_by_numeric_string_id(db_session: AsyncSession):
+    user = await create_user(db_session, username="resend-string-id@axiorapulse.com", register_mfa=False)
+
+    with patch("app.services.auth_service.dispatch_otp", new=AsyncMock(return_value=successful_otp_result())):
+        response = await auth_service.resend_otp(
+            ResendOTPRequest(id=str(user.id)), db_session
+        )
+    assert response.userid == user.id
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_by_username_fallback_when_id_not_digits(db_session: AsyncSession):
+    user = await create_user(db_session, username="resend-fallback@axiorapulse.com", register_mfa=False)
+
+    with patch("app.services.auth_service.dispatch_otp", new=AsyncMock(return_value=successful_otp_result())):
+        response = await auth_service.resend_otp(
+            ResendOTPRequest(id="not-a-number", emailOrMobile=user.username), db_session
+        )
+    assert response.userid == user.id
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_login_flow_rejects_unverified_account(db_session: AsyncSession):
+    user = await create_user(db_session, username="resend-login-unverified@axiorapulse.com", register_mfa=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.resend_otp(
+            ResendOTPRequest(id=user.id, flow="login"), db_session
+        )
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_login_flow_success_dispatches_login_otp(db_session: AsyncSession):
+    user = await create_user(db_session, username="resend-login-ok@axiorapulse.com")
+
+    with patch(
+        "app.services.auth_service.dispatch_login_otp",
+        new=AsyncMock(return_value=successful_otp_result()),
+    ) as dispatch_login_otp:
+        response = await auth_service.resend_otp(
+            ResendOTPRequest(id=user.id, flow="login"), db_session
+        )
+    assert response.userid == user.id
+    dispatch_login_otp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resend_otp_login_flow_dispatch_failure_raises_502(db_session: AsyncSession):
+    user = await create_user(db_session, username="resend-login-fail@axiorapulse.com")
+
+    with patch(
+        "app.services.auth_service.dispatch_login_otp",
+        new=AsyncMock(return_value=OTPResult(success=False, channel="email", error="smtp down")),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await auth_service.resend_otp(ResendOTPRequest(id=user.id, flow="login"), db_session)
+    assert exc.value.status_code == status.HTTP_502_BAD_GATEWAY

@@ -12,6 +12,7 @@ from app.models.questionnaire_models import (
     SubmitAnswersRequestItem,
     SubmitAnswersResponse,
     SubmitQuestionRequest,
+    UpdateQuestionRequest,
 )
 from app.services.questionnaire_service import questionnaire_service
 
@@ -72,6 +73,22 @@ async def submit_answers(
     except Exception:
         logger.exception("Questionnaire answer submission failed for user_id=%s", current_user.id)
         raise
+
+
+@router.put(
+    "/questionnaire/update-question/{question_id}",
+    response_model=InteractiveQuestionnaireResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update a questionnaire question",
+    description="Allows administrators to update an existing interactive questionnaire question item.",
+)
+async def update_question(
+    payload: UpdateQuestionRequest,
+    question_id: int = Path(..., ge=1, description="ID of the questionnaire question to update"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> InteractiveQuestionnaireResponse:
+    return await questionnaire_service.update_question(question_id, payload, current_user, db)
 
 
 @router.delete(

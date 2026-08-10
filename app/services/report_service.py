@@ -1,471 +1,514 @@
 """
-Report Service — Backend Report Generator for Axiora Pulse Agents
-──────────────────────────────────────────────────────────────────────────────
-Generates backend downloadable reports (PDF and DOC/TXT format) per agent:
-  - idea_validation_agent (Analysis 1: Problem Analysis)
-  - market_research_agent (Analysis 2: Target Customer & Market Research)
-  - full / all (Combined Multi-Agent Report)
+Template-first report generator for Axiora Pulse.
+
+The service always renders into the branded PDF template. It does not build or
+append legacy report layouts.
 """
-import io
-import json
+from __future__ import annotations
+
+import html
 import logging
+import os
+import re
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional, Tuple
+
+import fitz
 
 logger = logging.getLogger(__name__)
 
-# Try importing ReportLab for native PDF rendering
-try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
-    logger.info("[ReportService] ReportLab not installed; using standard report renderer fallback.")
+
+REPORT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "report_template.pdf"
+WATERMARK_RECT = fitz.Rect(228.0, 375.2, 383.9, 416.8)
+SYSTEM_FONT_DIR = Path(os.getenv("WINDIR", "C:\\Windows")) / "Fonts"
+BANNER_FONT_REGULAR = Path(os.getenv("AXIORA_REPORT_BANNER_FONT_REGULAR", SYSTEM_FONT_DIR / "GOTHIC.TTF"))
+BANNER_FONT_BOLD = Path(os.getenv("AXIORA_REPORT_BANNER_FONT_BOLD", SYSTEM_FONT_DIR / "GOTHICB.TTF"))
+BANNER_VENTURE_FONT_REGULAR = Path(
+    os.getenv("AXIORA_REPORT_BANNER_VENTURE_FONT_REGULAR", SYSTEM_FONT_DIR / "calibri.ttf")
+)
+BANNER_VENTURE_FONT_BOLD = Path(
+    os.getenv("AXIORA_REPORT_BANNER_VENTURE_FONT_BOLD", SYSTEM_FONT_DIR / "calibrib.ttf")
+)
 
 
 class ReportService:
-    """Backend service that transforms agent results into PDF and Doc downloads."""
+    """Transforms agent validation results into the single branded PDF format."""
 
     def generate_report(
         self,
         agent_name: str,
         validation_result: Dict[str, Any],
         idea_info: Optional[Dict[str, Any]] = None,
-        export_format: str = "pdf"
+        export_format: str = "pdf",
     ) -> Tuple[bytes, str, str]:
         """
-        Main entry point to generate a report.
-        Returns: (file_bytes, mime_type, filename)
+        Generate a report from the PDF template.
+
+        `export_format` is accepted for API compatibility, but PDF is the only
+        supported output format.
         """
         agent_key = agent_name.lower().strip()
-        fmt = export_format.lower().strip()
-        if fmt not in ("pdf", "doc", "txt"):
-            fmt = "pdf"
-
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
-        idea_title = (idea_info or {}).get("idea_title") or "Startup_Idea"
-        safe_title = "".join(c for c in idea_title if c.isalnum() or c in ("_", "-")).strip() or "Startup"
+        idea_title = (idea_info or {}).get("idea_title") or (idea_info or {}).get("name") or "Startup Idea"
+        safe_title = re.sub(r"[^A-Za-z0-9_-]+", "", str(idea_title)) or "Startup"
 
-        if fmt == "doc" or fmt == "txt":
-            return self._generate_doc_report(agent_key, validation_result, idea_info, safe_title, date_str)
-        else:
-            return self._generate_pdf_report(agent_key, validation_result, idea_info, safe_title, date_str)
-
-    # ── DOC / TXT Generator ───────────────────────────────────────────────────
-
-    def _generate_doc_report(
-        self,
-        agent_key: str,
-        validation_result: Dict[str, Any],
-        idea_info: Optional[Dict[str, Any]],
-        safe_title: str,
-        date_str: str
-    ) -> Tuple[bytes, str, str]:
-        """Generates a structured text/doc format report."""
-        lines = []
-        divider = "=" * 70
-        subdivider = "-" * 40
-
-        title_label = {
-            "idea_validation_agent": "ANALYSIS 1: IDEA VALIDATION REPORT",
-            "market_research_agent": "ANALYSIS 2: TARGET CUSTOMER & MARKET RESEARCH REPORT",
-            "full": "COMPREHENSIVE MULTI-AGENT VALIDATION REPORT",
-            "all": "COMPREHENSIVE MULTI-AGENT VALIDATION REPORT",
-        }.get(agent_key, "AGENT ANALYSIS REPORT")
-
-        lines.append(divider)
-        lines.append(f"AXIORA PULSE — {title_label}")
-        lines.append(f"Generated: {datetime.utcnow().strftime('%d %b %Y, %H:%M UTC')}")
-        if idea_info and idea_info.get("idea_title"):
-            lines.append(f"Venture: {idea_info.get('idea_title')}")
-        lines.append(divider)
-        lines.append("")
-
-        agent_results = validation_result.get("agent_results", {})
-
-        # ── Idea Validation Section ──────────────────────────────────────────
-        if agent_key in ("idea_validation_agent", "full", "all"):
-            iv = agent_results.get("idea_validation_agent", {}).get("data", {})
-            score = validation_result.get("validation_score", iv.get("problem_clarity_score", "N/A"))
-            verdict = str(validation_result.get("verdict", "N/A")).replace("_", " ").upper()
-
-            lines.append("SECTION 1: PROBLEM ANALYSIS & IDEA VALIDATION")
-            lines.append(subdivider)
-            lines.append(f"Validation Score      : {score}/100")
-            lines.append(f"Verdict               : {verdict}")
-            lines.append(f"Confidence Rating     : {MathRoundPercent(validation_result.get('confidence_rating', iv.get('confidence', 0.5)))}%")
-            if iv.get("pain_type"):
-                lines.append(f"Pain Type             : {iv.get('pain_type')}")
-            lines.append("")
-
-            if iv.get("problem_statement_summary"):
-                lines.append("Problem Statement Summary:")
-                lines.append(f"  {iv.get('problem_statement_summary')}")
-                lines.append("")
-
-            if iv.get("falsifiable_problem_sentence"):
-                lines.append("Falsifiable Problem Statement:")
-                lines.append(f"  \"{iv.get('falsifiable_problem_sentence')}\"")
-                lines.append("")
-
-            strengths = validation_result.get("strengths", [])
-            if strengths:
-                lines.append("Strengths Identified:")
-                for s in strengths:
-                    lines.append(f"  ✓ {s}")
-                lines.append("")
-
-            risks = validation_result.get("risks", [])
-            if risks:
-                lines.append("Risks & Concerns:")
-                for r in risks:
-                    lines.append(f"  ⚠ {r}")
-                lines.append("")
-
-            red_flags = iv.get("red_flags", [])
-            if red_flags:
-                lines.append("Red Flags:")
-                for rf in red_flags:
-                    lines.append(f"  🚩 {rf}")
-                lines.append("")
-
-            assumptions = iv.get("assumption_list") or validation_result.get("assumptions", [])
-            if assumptions:
-                lines.append("Key Falsifiable Assumptions:")
-                for a in assumptions:
-                    lines.append(f"  • {a}")
-                lines.append("")
-
-            recs = validation_result.get("recommendations", [])
-            if recs:
-                lines.append("Recommended Next Steps:")
-                for rec in recs:
-                    lines.append(f"  → {rec}")
-                lines.append("")
-
-        # ── Market Research Section ──────────────────────────────────────────
-        if agent_key in ("market_research_agent", "full", "all"):
-            mr = agent_results.get("market_research_agent", {}).get("data", {})
-
-            lines.append("SECTION 2: TARGET CUSTOMER & MARKET RESEARCH")
-            lines.append(subdivider)
-            lines.append(f"Market Opportunity Score : {mr.get('market_opportunity_score', 'N/A')}/100")
-            lines.append(f"Audience Narrowness Score: {mr.get('audience_narrowness_score', 'N/A')}/100")
-            lines.append(f"Analysis Confidence      : {MathRoundPercent(mr.get('confidence', 0.5))}%")
-            lines.append("")
-
-            if mr.get("market_opportunity_summary"):
-                lines.append("Market Opportunity Summary:")
-                lines.append(f"  {mr.get('market_opportunity_summary')}")
-                lines.append("")
-
-            if mr.get("primary_icp_summary"):
-                lines.append("Primary Ideal Customer Profile (ICP):")
-                lines.append(f"  {mr.get('primary_icp_summary')}")
-                lines.append("")
-
-            if mr.get("persona_summary"):
-                lines.append("Buyer Persona Narrative:")
-                lines.append(f"  {mr.get('persona_summary')}")
-                lines.append("")
-
-            segments = mr.get("target_customer_segments", [])
-            if segments:
-                lines.append("Target Customer Segments:")
-                for seg in segments:
-                    lines.append(f"  ◆ {seg}")
-                lines.append("")
-
-            sec_segments = mr.get("secondary_segments", [])
-            if sec_segments:
-                lines.append("Secondary Segments:")
-                for sseg in sec_segments:
-                    lines.append(f"  ◇ {sseg}")
-                lines.append("")
-
-            competitors = mr.get("competitor_overview", [])
-            if competitors:
-                lines.append("Competitor Overview & Substitutes:")
-                for comp in competitors:
-                    lines.append(f"  ⚡ {comp}")
-                lines.append("")
-
-            opp_signals = mr.get("opportunity_signals", [])
-            if opp_signals:
-                lines.append("Opportunity Signals:")
-                for os in opp_signals:
-                    lines.append(f"  ✅ {os}")
-                lines.append("")
-
-            risk_signals = mr.get("risk_signals", [])
-            if risk_signals:
-                lines.append("Market Risk Signals:")
-                for rs in risk_signals:
-                    lines.append(f"  ⚠ {rs}")
-                lines.append("")
-
-            mr_flags = mr.get("red_flags", [])
-            if mr_flags:
-                lines.append("Audience Red Flags:")
-                for flag in mr_flags:
-                    lines.append(f"  🚩 {flag}")
-                lines.append("")
-
-        lines.append(divider)
-        lines.append("Axiora Pulse AI Orchestration Engine — Confidential Report")
-        lines.append(divider)
-
-        text_content = "\n".join(lines)
-        file_bytes = text_content.encode("utf-8")
-        filename = f"{safe_title}_{agent_key}_report_{date_str}.txt"
-        return file_bytes, "text/plain; charset=utf-8", filename
-
-    # ── PDF Generator ────────────────────────────────────────────────────────
-
-    def _generate_pdf_report(
-        self,
-        agent_key: str,
-        validation_result: Dict[str, Any],
-        idea_info: Optional[Dict[str, Any]],
-        safe_title: str,
-        date_str: str
-    ) -> Tuple[bytes, str, str]:
-        """Generates a PDF format report using ReportLab if available, or structured text PDF fallback."""
+        pdf_bytes = self._build_template_pdf(agent_key, validation_result, idea_info or {})
         filename = f"{safe_title}_{agent_key}_report_{date_str}.pdf"
+        return pdf_bytes, "application/pdf", filename
 
-        if REPORTLAB_AVAILABLE:
-            pdf_bytes = self._build_reportlab_pdf(agent_key, validation_result, idea_info)
-            return pdf_bytes, "application/pdf", filename
-        else:
-            # Clean pure-python text fallback returned with text MIME type for universal compatibility
-            txt_bytes, _, _ = self._generate_doc_report(agent_key, validation_result, idea_info, safe_title, date_str)
-            return txt_bytes, "text/plain; charset=utf-8", filename.replace(".pdf", ".txt")
-
-    # ── ReportLab PDF Builder ────────────────────────────────────────────────
-
-    def _build_reportlab_pdf(
+    def _build_template_pdf(
         self,
         agent_key: str,
         validation_result: Dict[str, Any],
-        idea_info: Optional[Dict[str, Any]]
+        idea_info: Dict[str, Any],
     ) -> bytes:
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=letter,
-            leftMargin=36,
-            rightMargin=36,
-            topMargin=36,
-            bottomMargin=36
+        template_path = self._resolve_template_path()
+        template = fitz.open(template_path)
+        output = fitz.open()
+
+        report_title = self._report_title(agent_key)
+        venture = str(idea_info.get("idea_title") or idea_info.get("name") or "Startup Venture")
+        blocks = self._content_blocks(agent_key, validation_result)
+
+        current_page_number = 0
+        page = self._append_template_page(output, template, current_page_number)
+        self._draw_cover_header(page, report_title, venture)
+        cursor_y = 150
+
+        for block in blocks:
+            html_block = self._block_html(block)
+            min_height = block.get("min_height", 34)
+            if cursor_y + min_height > 742:
+                current_page_number += 1
+                page = self._append_template_page(output, template, current_page_number)
+                cursor_y = 44
+
+            cursor_y = self._insert_flowing_html(
+                output=output,
+                template=template,
+                page=page,
+                html_block=html_block,
+                cursor_y=cursor_y,
+                current_page_number_ref=[current_page_number],
+            )
+            current_page_number = output.page_count - 1
+            page = output[current_page_number]
+
+        pdf_bytes = output.tobytes(deflate=True, garbage=4)
+        output.close()
+        template.close()
+        return pdf_bytes
+
+    def _resolve_template_path(self) -> Path:
+        configured_path = os.getenv("AXIORA_REPORT_TEMPLATE_PATH")
+        template_path = Path(configured_path) if configured_path else REPORT_TEMPLATE_PATH
+        if not template_path.exists():
+            raise FileNotFoundError(
+                f"Report template not found at {template_path}. "
+                "Set AXIORA_REPORT_TEMPLATE_PATH or include app/templates/report_template.pdf."
+            )
+        return template_path
+
+    def _append_template_page(self, output: fitz.Document, template: fitz.Document, page_number: int) -> fitz.Page:
+        source_index = min(page_number, template.page_count - 1)
+        output.insert_pdf(template, from_page=source_index, to_page=source_index)
+        page = output[-1]
+        top = 132 if page_number == 0 else 32
+        content_rect = fitz.Rect(36, top, 576, 742)
+        page.draw_rect(content_rect, color=None, fill=(1, 1, 1), fill_opacity=0.62, overlay=True)
+
+        # Extra fade layer over the watermark logo so it sits further into the
+        # background instead of competing with body text.
+        watermark_hole = WATERMARK_RECT & content_rect
+        if not watermark_hole.is_empty:
+            page.draw_rect(watermark_hole, color=None, fill=(1, 1, 1), fill_opacity=0.4, overlay=True)
+        return page
+
+    def _draw_cover_header(self, page: fitz.Page, report_title: str, venture: str) -> None:
+        title_bold_font = self._font_file(BANNER_FONT_BOLD)
+        title_bold_name = "BannerTitleFontBold" if title_bold_font else "Helvetica-Bold"
+        venture_regular_font = self._font_file(BANNER_VENTURE_FONT_REGULAR)
+        venture_bold_font = self._font_file(BANNER_VENTURE_FONT_BOLD)
+        venture_regular_name = "BannerVentureFontRegular" if venture_regular_font else "Helvetica"
+        venture_bold_name = "BannerVentureFontBold" if venture_bold_font else "Helvetica-Bold"
+
+        page.insert_text(
+            fitz.Point(48, 78),
+            report_title,
+            fontname=title_bold_name,
+            fontfile=title_bold_font,
+            fontsize=31,
+            color=(1, 1, 1),
+        )
+        venture_label = "Idea Title : "
+        venture_label_point = fitz.Point(48, 111)
+        page.insert_text(
+            venture_label_point,
+            venture_label,
+            fontname=venture_regular_name,
+            fontfile=venture_regular_font,
+            fontsize=12,
+            color=(1, 1, 1),
+        )
+        label_width = self._text_length(venture_label, fontfile=venture_regular_font, fontsize=12)
+        page.insert_text(
+            fitz.Point(venture_label_point.x + label_width + 2, venture_label_point.y),
+            venture,
+            fontname=venture_bold_name,
+            fontfile=venture_bold_font,
+            fontsize=12,
+            color=(1, 1, 1),
         )
 
-        styles = getSampleStyleSheet()
+    def _insert_flowing_html(
+        self,
+        output: fitz.Document,
+        template: fitz.Document,
+        page: fitz.Page,
+        html_block: str,
+        cursor_y: float,
+        current_page_number_ref: list[int],
+    ) -> float:
+        while True:
+            rect = fitz.Rect(36, cursor_y, 576, 742)
+            spare_height, scale = page.insert_htmlbox(
+                rect,
+                html_block,
+                css=self._css(),
+                scale_low=1,
+            )
+            if spare_height >= 0:
+                used_height = max(10, rect.height - spare_height)
+                return cursor_y + used_height + 8
 
-        # Custom Palette
-        primary_color = colors.HexColor("#FF4F00")  # Axiora Orange
-        dark_color = colors.HexColor("#0F172A")
-        body_color = colors.HexColor("#334155")
-        light_bg = colors.HexColor("#F8FAFC")
-        purple_color = colors.HexColor("#8B5CF6")
+            current_page_number_ref[0] += 1
+            page = self._append_template_page(output, template, current_page_number_ref[0])
+            cursor_y = 44
 
-        title_style = ParagraphStyle(
-            'ReportTitle',
-            parent=styles['Heading1'],
-            fontName='Helvetica-Bold',
-            fontSize=16,
-            textColor=primary_color,
-            spaceAfter=4
-        )
-        subtitle_style = ParagraphStyle(
-            'ReportSubtitle',
-            parent=styles['Normal'],
-            fontName='Helvetica',
-            fontSize=9,
-            textColor=colors.HexColor("#64748B"),
-            spaceAfter=12
-        )
-        h2_style = ParagraphStyle(
-            'SectionH2',
-            parent=styles['Heading2'],
-            fontName='Helvetica-Bold',
-            fontSize=12,
-            textColor=dark_color,
-            spaceBefore=10,
-            spaceAfter=6
-        )
-        body_style = ParagraphStyle(
-            'ReportBody',
-            parent=styles['Normal'],
-            fontName='Helvetica',
-            fontSize=9.5,
-            textColor=body_color,
-            leading=13,
-            spaceAfter=6
-        )
-        list_style = ParagraphStyle(
-            'ReportList',
-            parent=styles['Normal'],
-            fontName='Helvetica',
-            fontSize=9,
-            textColor=body_color,
-            leading=12,
-            leftIndent=12,
-            spaceAfter=3
-        )
+    def _content_blocks(self, agent_key: str, validation_result: Dict[str, Any]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        agent_results = validation_result.get("agent_results") or {}
 
-        elements = []
-
-        # Header Title
-        report_name = {
-            "idea_validation_agent": "Analysis 1 · Idea Validation Report",
-            "market_research_agent": "Analysis 2 · Target Customer & Market Research Report",
-            "full": "Full Multi-Agent Validation Report",
-            "all": "Full Multi-Agent Validation Report",
-        }.get(agent_key, "Agent Analysis Report")
-
-        venture = (idea_info or {}).get("idea_title") or "Startup Venture"
-        elements.append(Paragraph(f"<b>{report_name}</b>", title_style))
-        elements.append(Paragraph(f"Venture: <b>{venture}</b> | Generated by Axiora Pulse Engine", subtitle_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=primary_color, spaceAfter=10))
-
-        agent_results = validation_result.get("agent_results", {})
-
-        # ── Idea Validation Content ──────────────────────────────────────────
         if agent_key in ("idea_validation_agent", "full", "all"):
-            iv = agent_results.get("idea_validation_agent", {}).get("data", {})
-            score = validation_result.get("validation_score", iv.get("problem_clarity_score", "N/A"))
-            verdict = str(validation_result.get("verdict", "N/A")).replace("_", " ").upper()
+            blocks.extend(self._idea_validation_blocks(validation_result, agent_results))
 
-            elements.append(Paragraph("<b>1. Problem Analysis & Idea Validation</b>", h2_style))
-
-            summary_table_data = [
-                [
-                    Paragraph(f"<b>Validation Score:</b> {score}/100", body_style),
-                    Paragraph(f"<b>Verdict:</b> {verdict}", body_style),
-                    Paragraph(f"<b>Confidence:</b> {MathRoundPercent(validation_result.get('confidence_rating', iv.get('confidence', 0.5)))}%", body_style)
-                ]
-            ]
-            t = Table(summary_table_data, colWidths=[180, 180, 180])
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), light_bg),
-                ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                ('PADDING', (0, 0), (-1, -1), 6),
-            ]))
-            elements.append(t)
-            elements.append(Spacer(1, 8))
-
-            if iv.get("problem_statement_summary"):
-                elements.append(Paragraph("<b>Problem Summary:</b>", body_style))
-                elements.append(Paragraph(iv.get("problem_statement_summary"), body_style))
-
-            if iv.get("falsifiable_problem_sentence"):
-                elements.append(Paragraph(f"<i>Falsifiable Problem Statement: \"{iv.get('falsifiable_problem_sentence')}\"</i>", body_style))
-
-            strengths = validation_result.get("strengths", [])
-            if strengths:
-                elements.append(Paragraph("<b>Strengths:</b>", body_style))
-                for s in strengths:
-                    elements.append(Paragraph(f"• {s}", list_style))
-
-            risks = validation_result.get("risks", [])
-            if risks:
-                elements.append(Paragraph("<b>Risks & Concerns:</b>", body_style))
-                for r in risks:
-                    elements.append(Paragraph(f"• {r}", list_style))
-
-            red_flags = iv.get("red_flags", [])
-            if red_flags:
-                elements.append(Paragraph("<b>Red Flags:</b>", body_style))
-                for rf in red_flags:
-                    elements.append(Paragraph(f"• {rf}", list_style))
-
-            elements.append(Spacer(1, 10))
-
-        # ── Market Research Content ──────────────────────────────────────────
         if agent_key in ("market_research_agent", "full", "all"):
-            mr = agent_results.get("market_research_agent", {}).get("data", {})
-            m_score = mr.get("market_opportunity_score", "N/A")
-            n_score = mr.get("audience_narrowness_score", "N/A")
+            blocks.extend(self._market_research_blocks(agent_results))
 
-            elements.append(Paragraph("<b>2. Target Customer & Market Research</b>", h2_style))
+        if agent_key in ("survey_intelligence_agent", "full", "all"):
+            blocks.extend(self._survey_blocks(agent_results))
 
-            mr_table_data = [
-                [
-                    Paragraph(f"<b>Market Score:</b> {m_score}/100", body_style),
-                    Paragraph(f"<b>Audience Narrowness:</b> {n_score}/100", body_style),
-                    Paragraph(f"<b>Confidence:</b> {MathRoundPercent(mr.get('confidence', 0.5))}%", body_style)
-                ]
+        if not blocks:
+            blocks.append(
+                {
+                    "type": "section",
+                    "title": "Validation Report",
+                    "body": "No report content was returned by the selected agent.",
+                    "min_height": 90,
+                }
+            )
+        return blocks
+
+    def _idea_validation_blocks(
+        self, validation_result: Dict[str, Any], agent_results: Dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        iv = (agent_results.get("idea_validation_agent") or {}).get("data") or {}
+        score = validation_result.get("validation_score", iv.get("problem_clarity_score", "N/A"))
+        verdict = str(validation_result.get("verdict", "N/A")).replace("_", " ").upper()
+        confidence = self._percent(validation_result.get("confidence_rating", iv.get("confidence", 0.5)))
+
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "title": "Problem & Idea Validation",
+                "metrics": [
+                    ("Validation Score", f"{score}/100"),
+                    ("Verdict", verdict),
+                    ("Confidence", f"{confidence}%"),
+                ],
+                "min_height": 96,
+            }
+        ]
+
+        if iv.get("problem_statement_summary"):
+            blocks.append(
+                {
+                    "type": "paragraph",
+                    "title": "Problem Summary:",
+                    "body": iv["problem_statement_summary"],
+                    "min_height": 88,
+                }
+            )
+
+        if iv.get("falsifiable_problem_sentence"):
+            blocks.append(
+                {
+                    "type": "inline",
+                    "label": "Falsifiable Problem Statement",
+                    "body": iv["falsifiable_problem_sentence"],
+                    "accent": True,
+                    "min_height": 52,
+                }
+            )
+
+        blocks.extend(
+            [
+                *self._list_blocks("Strengths", validation_result.get("strengths")),
+                *self._list_blocks("Risks & Concerns", validation_result.get("risks")),
+                *self._list_blocks("Red Flags", iv.get("red_flags")),
+                *self._list_blocks(
+                    "Key Falsifiable Assumptions",
+                    iv.get("assumption_list") or validation_result.get("assumptions"),
+                ),
+                *self._list_blocks("Recommended Next Steps", validation_result.get("recommendations")),
             ]
-            t2 = Table(mr_table_data, colWidths=[180, 180, 180])
-            t2.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), light_bg),
-                ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                ('PADDING', (0, 0), (-1, -1), 6),
-            ]))
-            elements.append(t2)
-            elements.append(Spacer(1, 8))
+        )
+        return [block for block in blocks if block]
 
-            if mr.get("market_opportunity_summary"):
-                elements.append(Paragraph("<b>Market Opportunity Summary:</b>", body_style))
-                elements.append(Paragraph(mr.get("market_opportunity_summary"), body_style))
+    def _market_research_blocks(self, agent_results: Dict[str, Any]) -> list[dict[str, Any]]:
+        mr = (agent_results.get("market_research_agent") or {}).get("data") or {}
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "title": "Target Customer & Market Research",
+                "metrics": [
+                    ("Market Score", f"{mr.get('market_opportunity_score', 'N/A')}/100"),
+                    ("Audience Narrowness", f"{mr.get('audience_narrowness_score', 'N/A')}/100"),
+                    ("Confidence", f"{self._percent(mr.get('confidence', 0.5))}%"),
+                ],
+                "min_height": 96,
+            },
+            self._paragraph_block("Market Opportunity Summary:", mr.get("market_opportunity_summary")),
+            self._paragraph_block("Primary Ideal Customer Profile (ICP):", mr.get("primary_icp_summary")),
+            self._paragraph_block("Buyer Persona:", mr.get("persona_summary")),
+            *self._list_blocks("Target Customer Segments", mr.get("target_customer_segments")),
+            *self._list_blocks("Secondary Segments", mr.get("secondary_segments")),
+            *self._list_blocks("Competitor Overview", mr.get("competitor_overview")),
+            *self._list_blocks("Opportunity Signals", mr.get("opportunity_signals")),
+            *self._list_blocks("Market Risks", mr.get("risk_signals")),
+            *self._list_blocks("Audience Red Flags", mr.get("red_flags")),
+        ]
+        return [block for block in blocks if block]
 
-            if mr.get("primary_icp_summary"):
-                elements.append(Paragraph("<b>Primary Ideal Customer Profile (ICP):</b>", body_style))
-                elements.append(Paragraph(mr.get("primary_icp_summary"), body_style))
+    def _survey_blocks(self, agent_results: Dict[str, Any]) -> list[dict[str, Any]]:
+        survey = (agent_results.get("survey_intelligence_agent") or {}).get("data") or {}
+        questions = survey.get("questions") or []
+        question_lines = []
+        for index, question in enumerate(questions, start=1):
+            if isinstance(question, dict):
+                text = question.get("question_text") or question.get("question") or ""
+            else:
+                text = str(question)
+            if text:
+                question_lines.append(f"{index}. {text}")
 
-            if mr.get("persona_summary"):
-                elements.append(Paragraph(f"<i>Buyer Persona: {mr.get('persona_summary')}</i>", body_style))
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "title": "Survey Intelligence",
+                "body": survey.get("survey_objective") or survey.get("summary") or "",
+                "min_height": 80,
+            },
+            *self._list_blocks("Hypothesis Questionnaire", question_lines),
+        ]
+        return [block for block in blocks if block]
 
-            segments = mr.get("target_customer_segments", [])
-            if segments:
-                elements.append(Paragraph("<b>Target Customer Segments:</b>", body_style))
-                for seg in segments:
-                    elements.append(Paragraph(f"• {seg}", list_style))
+    def _paragraph_block(self, title: str, body: Any) -> Optional[dict[str, Any]]:
+        if not body:
+            return None
+        return {"type": "paragraph", "title": title, "body": body, "min_height": 72}
 
-            competitors = mr.get("competitor_overview", [])
-            if competitors:
-                elements.append(Paragraph("<b>Competitor Overview:</b>", body_style))
-                for comp in competitors:
-                    elements.append(Paragraph(f"• {comp}", list_style))
+    def _list_blocks(self, title: str, items: Any) -> list[dict[str, Any]]:
+        normalized = [str(item) for item in self._as_list(items) if str(item).strip()]
+        if not normalized:
+            return []
+        blocks = [{"type": "list_heading", "title": title, "min_height": 32}]
+        blocks.extend({"type": "list_item", "body": item, "min_height": 28} for item in normalized)
+        return blocks
 
-            opp_signals = mr.get("opportunity_signals", [])
-            if opp_signals:
-                elements.append(Paragraph("<b>Opportunity Signals:</b>", body_style))
-                for os in opp_signals:
-                    elements.append(Paragraph(f"• {os}", list_style))
+    def _block_html(self, block: dict[str, Any]) -> str:
+        block_type = block.get("type")
+        if block_type == "section":
+            metrics_html = ""
+            if block.get("metrics"):
+                metrics_html = "<table class='metrics'><tr>" + "".join(
+                    f"<td class='metric metric-{index}'><b>{self._e(label)}:</b> {self._e(value)}</td>"
+                    for index, (label, value) in enumerate(block["metrics"])
+                ) + "</tr></table>"
+            body_html = f"<p class='body-text'>{self._e(block.get('body'))}</p>" if block.get("body") else ""
+            return f"<h1>{self._e(block.get('title'))}</h1>{metrics_html}{body_html}"
 
-            risk_signals = mr.get("risk_signals", [])
-            if risk_signals:
-                elements.append(Paragraph("<b>Market Risks:</b>", body_style))
-                for rs in risk_signals:
-                    elements.append(Paragraph(f"• {rs}", list_style))
+        if block_type == "paragraph":
+            return f"<p class='label'>{self._e(block.get('title'))}</p><p class='body-text'>{self._e(block.get('body'))}</p>"
 
-            mr_flags = mr.get("red_flags", [])
-            if mr_flags:
-                elements.append(Paragraph("<b>Audience Red Flags:</b>", body_style))
-                for flag in mr_flags:
-                    elements.append(Paragraph(f"• {flag}", list_style))
+        if block_type == "inline":
+            body_class = "accent" if block.get("accent") else ""
+            return (
+                f"<p class='callout'><b>{self._e(block.get('label'))}:</b> "
+                f"<span class='{body_class}'>{self._e(block.get('body'))}</span></p>"
+            )
 
-        elements.append(Spacer(1, 14))
-        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1"), spaceAfter=6))
-        elements.append(Paragraph("<font size=7 color='#94A3B8'>Axiora Pulse AI Engine · Confidential Startup Intelligence Report</font>", body_style))
+        if block_type == "list":
+            items = "".join(f"<li>{self._bold_label(item)}</li>" for item in block.get("items", []))
+            return f"<h2>{self._e(block.get('title'))}</h2><ul>{items}</ul>"
 
-        doc.build(elements)
-        buffer.seek(0)
-        return buffer.getvalue()
+        if block_type == "list_heading":
+            return f"<h2>{self._e(block.get('title'))}</h2>"
+
+        if block_type == "list_item":
+            return f"<ul class='single'><li>{self._bold_label(block.get('body', ''))}</li></ul>"
+
+        return f"<p>{self._e(block.get('body'))}</p>"
+
+    def _css(self) -> str:
+        return """
+            body {
+                font-family: Arial, Helvetica, sans-serif;
+                color: #222222;
+                font-size: 11.5px;
+                line-height: 1.5;
+            }
+            h1 {
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 15.5px;
+                margin: 0 0 18px 0;
+                font-weight: 700;
+                color: #111111;
+            }
+            h2 {
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 14.5px;
+                margin: 10px 0 8px 0;
+                font-weight: 700;
+                color: #111111;
+            }
+            p {
+                font-size: 11.5px;
+                line-height: 1.5;
+                margin: 0 0 8px 0;
+                text-align: left;
+            }
+            .body-text {
+                font-size: 11.5px;
+                line-height: 1.5;
+                text-align: left;
+            }
+            .label {
+                font-size: 11.5px;
+                line-height: 1.5;
+                font-weight: 700;
+                margin-bottom: 6px;
+                text-align: left;
+            }
+            .callout {
+                font-size: 11.5px;
+                line-height: 1.5;
+                text-align: left;
+            }
+            table.metrics {
+                border-collapse: collapse;
+                table-layout: fixed;
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 11.5px;
+                line-height: 1.5;
+                margin: 0 0 18px 0;
+                width: 100%;
+                text-align: left;
+            }
+            table.metrics td {
+                padding: 0 12px 0 0;
+                text-align: left;
+                vertical-align: baseline;
+                white-space: nowrap;
+                overflow: hidden;
+            }
+            table.metrics td.metric-0 {
+                width: 34%;
+            }
+            table.metrics td.metric-1 {
+                width: 34%;
+            }
+            table.metrics td.metric-2 {
+                width: 32%;
+            }
+            ul {
+                font-size: 11.5px;
+                line-height: 1.5;
+                margin: 0 0 10px 16px;
+                padding: 0;
+            }
+            li {
+                font-size: 11.5px;
+                line-height: 1.5;
+                margin: 0 0 5px 0;
+                padding-left: 2px;
+                text-align: left;
+            }
+            ul.single {
+                margin: 0 0 1px 16px;
+                padding: 0;
+            }
+            ul.single li {
+                font-size: 11.5px;
+                line-height: 1.3;
+                margin: 0 0 1px 0;
+                padding-left: 2px;
+                text-align: left;
+            }
+            .accent {
+                color: #FF4500;
+                font-weight: 700;
+            }
+            b {
+                font-weight: 700;
+            }
+        """
+
+    def _font_file(self, path: Path) -> Optional[str]:
+        return str(path) if path.exists() else None
+
+    def _text_length(self, text: str, fontfile: Optional[str], fontsize: float) -> float:
+        if fontfile:
+            return fitz.Font(fontfile=fontfile).text_length(text, fontsize=fontsize)
+        return fitz.get_text_length(text, fontname="Helvetica", fontsize=fontsize)
+
+    def _report_title(self, agent_key: str) -> str:
+        return {
+            "idea_validation_agent": "Idea Validation Report",
+            "market_research_agent": "Market Research Report",
+            "survey_intelligence_agent": "Survey Intelligence Report",
+            "full": "Startup Validation Report",
+            "all": "Startup Validation Report",
+        }.get(agent_key, "Startup Validation Report")
+
+    def _as_list(self, value: Any) -> Iterable[Any]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]
+
+    def _bold_label(self, value: str) -> str:
+        escaped = self._e(value)
+        if ":" not in escaped:
+            return escaped
+        label, rest = escaped.split(":", 1)
+        if len(label) > 80:
+            return escaped
+        return f"<b>{label}:</b>{rest}"
+
+    def _e(self, value: Any) -> str:
+        return html.escape("" if value is None else str(value))
+
+    def _percent(self, val: Any) -> int:
+        try:
+            f = float(val)
+            return round(f * 100) if f <= 1.0 else round(f)
+        except (ValueError, TypeError):
+            return 50
 
 
-def MathRoundPercent(val: Any) -> int:
-    """Helper to convert float confidence (0.0-1.0) into integer percentage."""
-    try:
-        f = float(val)
-        return round(f * 100) if f <= 1.0 else round(f)
-    except (ValueError, TypeError):
-        return 50
-
-
-# Global singleton
 report_service = ReportService()

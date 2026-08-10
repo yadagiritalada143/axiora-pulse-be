@@ -57,10 +57,20 @@ class OpenAIProvider(LLMGateway):
         """Stream response tokens/chunks word-by-word/line-by-line."""
         model = request.model or self._default_model
         messages = []
-
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
-        messages.append({"role": "user", "content": request.user_prompt})
+
+        user_content = request.user_prompt
+        if request.images:
+            content_blocks = [{"type": "text", "text": request.user_prompt}]
+            for img in request.images:
+                content_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": img}
+                })
+            user_content = content_blocks
+
+        messages.append({"role": "user", "content": user_content})
 
         kwargs: dict = {
             "model": model,
@@ -106,7 +116,18 @@ class OpenAIProvider(LLMGateway):
         messages = []
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
-        messages.append({"role": "user", "content": request.user_prompt})
+
+        user_content = request.user_prompt
+        if request.images:
+            content_blocks = [{"type": "text", "text": request.user_prompt}]
+            for img in request.images:
+                content_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": img}
+                })
+            user_content = content_blocks
+
+        messages.append({"role": "user", "content": user_content})
 
         kwargs: dict = {
             "model": model,

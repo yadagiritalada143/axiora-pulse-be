@@ -21,6 +21,17 @@ class SubmitQuestionRequest(BaseModel):
         return self
 
 
+class UpdateQuestionRequest(BaseModel):
+    """Payload for PUT /api/v1/admin/questionnaire/update-question/{question_id}."""
+
+    question: str | None = Field(default=None, min_length=1, description="Updated question text")
+    answer_type: Literal["textarea", "radiobuttons", "checkboxes", "dropdown"] | None = Field(
+        default=None, description="Updated question answer input style"
+    )
+    optional: bool | None = Field(default=None, description="Whether the question is optional")
+    answers: list[str] | None = Field(default=None, description="Updated answer options for choice-based questions")
+
+
 class InteractiveQuestionnaireResponse(BaseModel):
     """Response returned after a questionnaire question is created."""
 

@@ -15,6 +15,8 @@ class LLMRequest(BaseModel):
     # NOTE: response_format="json" is only supported by some providers (OpenAI).
     # For HuggingFace / Llama we rely on prompt engineering instead.
     response_format: str = "text"   # text | json
+    images: Optional[list[str]] = None  # Base64 data URIs or image URLs for vision models
+
 
 
 class LLMResponse(BaseModel):
