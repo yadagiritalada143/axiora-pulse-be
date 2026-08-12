@@ -192,6 +192,10 @@ class WorkspaceAttachmentService:
         """
         # Verify workspace ownership
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+        logger.info(
+            "[WorkspaceAttachmentService] Upload requested for workspace %s by user %s",
+            workspace_id, current_user.id,
+        )
 
         file_bytes = await file.read()
         filename = file.filename or "upload"
@@ -317,6 +321,10 @@ class WorkspaceAttachmentService:
         result = await db.execute(query)
         attachments = result.scalars().all()
 
+        logger.info(
+            "[WorkspaceAttachmentService] Listed %s attachments (workspace %s, user %s)",
+            len(attachments), workspace_id, current_user.id,
+        )
         return WorkspaceAttachmentListResponse(
             total=len(attachments),
             attachments=[self._format_attachment_response(a) for a in attachments],
@@ -390,6 +398,10 @@ class WorkspaceAttachmentService:
                 detail=f"Workspace {workspace_id} not found.",
             )
         if workspace.user_id != current_user.id:
+            logger.warning(
+                "[WorkspaceAttachmentService] Unauthorized workspace access attempt: workspace_id=%s by user_id=%s",
+                workspace_id, current_user.id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this workspace.",
@@ -418,6 +430,10 @@ class WorkspaceAttachmentService:
                 detail=f"Attachment {attachment_id} not found in workspace {workspace_id}.",
             )
         if attachment.user_id != current_user.id:
+            logger.warning(
+                "[WorkspaceAttachmentService] Unauthorized attachment access attempt: attachment_id=%s workspace_id=%s by user_id=%s",
+                attachment_id, workspace_id, current_user.id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this attachment.",

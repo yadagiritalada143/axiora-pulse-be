@@ -55,6 +55,53 @@ class OutputValidator:
         self.default_disclaimer = default_disclaimer
         self.forbidden_patterns = forbidden_patterns or DEFAULT_FORBIDDEN_PATTERNS
 
+    def _attempt_json_repair(self, text: str) -> dict[str, Any] | None:
+        """Attempt to repair truncated JSON text by balancing quotes and closing brackets/braces."""
+        if not text or "{" not in text:
+            return None
+
+        start_idx = text.find("{")
+        snippet = text[start_idx:].strip()
+
+        open_brackets = 0
+        open_braces = 0
+        in_string = False
+        escape = False
+
+        for char in snippet:
+            if escape:
+                escape = False
+                continue
+            if char == "\\" and in_string:
+                escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if char == "[":
+                    open_brackets += 1
+                elif char == "]":
+                    open_brackets = max(0, open_brackets - 1)
+                elif char == "{":
+                    open_braces += 1
+                elif char == "}":
+                    open_braces = max(0, open_braces - 1)
+
+        repaired = snippet
+        if in_string:
+            repaired += '"'
+        repaired += "]" * open_brackets
+        repaired += "}" * open_braces
+
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return None
+
     def parse_json(self, raw_content: str) -> tuple[dict[str, Any], list[str]]:
         """Extract and parse valid JSON object from raw LLM output text."""
         errors: list[str] = []
@@ -78,6 +125,12 @@ class OutputValidator:
                     return parsed, []
             except json.JSONDecodeError:
                 pass
+
+        # Attempt repair of truncated JSON block
+        repaired_dict = self._attempt_json_repair(raw_content)
+        if repaired_dict is not None:
+            logger.info("Successfully repaired truncated JSON output from LLM.")
+            return repaired_dict, []
 
         errors.append("Failed to parse valid JSON from LLM output.")
         return {}, errors

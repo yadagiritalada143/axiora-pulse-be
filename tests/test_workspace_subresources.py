@@ -67,7 +67,11 @@ def authenticate_as(user: User) -> None:
     app.dependency_overrides[get_current_user] = _mock_current_user
 
 
-async def _fake_process_message(state: WorkspaceMentorState, user_message: str) -> WorkspaceMentorState:
+async def _fake_process_message(
+    state: WorkspaceMentorState,
+    user_message: str,
+    attachments: list | None = None,
+) -> WorkspaceMentorState:
     """Deterministic stand-in for mentor_service.process_message — avoids real LLM calls."""
     state.conversation_history.append({"role": "user", "content": user_message})
     state.idea["idea_title"] = "Mocked Idea Title"
@@ -167,7 +171,11 @@ async def test_chat_with_mentor_auto_syncs_survey_when_validated(
     workspace = await create_workspace(db_session, user_id=user.id)
     authenticate_as(user)
 
-    async def _validated_process_message(state: WorkspaceMentorState, user_message: str) -> WorkspaceMentorState:
+    async def _validated_process_message(
+        state: WorkspaceMentorState,
+        user_message: str,
+        attachments: list | None = None,
+    ) -> WorkspaceMentorState:
         state.conversation_history.append({"role": "user", "content": user_message})
         state.state = "VALIDATED"
         state.validation_result = sample_validation_result()

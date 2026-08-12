@@ -53,8 +53,16 @@ class ReportService:
         idea_title = (idea_info or {}).get("idea_title") or (idea_info or {}).get("name") or "Startup Idea"
         safe_title = re.sub(r"[^A-Za-z0-9_-]+", "", str(idea_title)) or "Startup"
 
-        pdf_bytes = self._build_template_pdf(agent_key, validation_result, idea_info or {})
+        # Log only which agent/format was requested — never the validation
+        # content itself (that's the customer's proprietary report output).
+        logger.info("Generating %s report for agent=%s", export_format, agent_key)
+        try:
+            pdf_bytes = self._build_template_pdf(agent_key, validation_result, idea_info or {})
+        except Exception:
+            logger.exception("Report generation failed for agent=%s", agent_key)
+            raise
         filename = f"{safe_title}_{agent_key}_report_{date_str}.pdf"
+        logger.info("Report generated for agent=%s: %s bytes", agent_key, len(pdf_bytes))
         return pdf_bytes, "application/pdf", filename
 
     def _build_template_pdf(
@@ -104,6 +112,7 @@ class ReportService:
         configured_path = os.getenv("AXIORA_REPORT_TEMPLATE_PATH")
         template_path = Path(configured_path) if configured_path else REPORT_TEMPLATE_PATH
         if not template_path.exists():
+            logger.error("Report template not found at %s", template_path)
             raise FileNotFoundError(
                 f"Report template not found at {template_path}. "
                 "Set AXIORA_REPORT_TEMPLATE_PATH or include app/templates/report_template.pdf."

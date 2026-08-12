@@ -35,6 +35,8 @@ from app.core.security import (
 )
 import os
 
+from app.workers.background_jobs import enqueue_email_job
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -388,6 +390,13 @@ class AuthService:
 
             access_token, refresh_token = await _issue_token_pair(user, db)
             logger.info("Register OTP verified for user id=%s (%s)", user.id, user.username)
+
+            # Fire-and-forget welcome email — never blocks or fails this request.
+            enqueue_email_job(
+                "registration_success",
+                to_email=user.username,
+                display_name=user.display_name,
+            )
 
             actions = ["dashboard"] if user.role == "admin" else []
             return VerifyOTPResponse(
@@ -808,6 +817,13 @@ class AuthService:
             user.id
         )
 
+        # Fire-and-forget confirmation email — never blocks or fails this request.
+        enqueue_email_job(
+            "password_reset_success",
+            to_email=user.username,
+            changed_at=user.password_changed_at,
+        )
+
         actions = ["dashboard"] if user.role == "admin" else []
         return ForgotPasswordResetResponse(
             status="success",
@@ -846,6 +862,13 @@ class AuthService:
         logger.info(
             "Password changed successfully for user id=%s. All other access tokens are now revoked.",
             user.id
+        )
+
+        # Fire-and-forget confirmation email — never blocks or fails this request.
+        enqueue_email_job(
+            "password_reset_success",
+            to_email=user.username,
+            changed_at=user.password_changed_at,
         )
 
         return ChangePasswordResponse()

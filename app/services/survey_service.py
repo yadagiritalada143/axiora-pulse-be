@@ -109,6 +109,10 @@ class SurveyService:
         db: AsyncSession,
     ) -> SurveyResponse:
         """Create or replace the full set of survey questions for a workspace, owned by current_user."""
+        logger.info(
+            "Saving survey questions for user id: %s workspace id: %s",
+            current_user.id, payload.workspaceId,
+        )
         if payload.userId != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -178,6 +182,7 @@ class SurveyService:
         db: AsyncSession,
     ) -> SurveyResponse:
         """Partially update a survey's link and/or question set — 404/403 enforced."""
+        logger.info("Updating survey for user id: %s survey id: %s", current_user.id, survey_id)
         if payload.userId != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -227,6 +232,10 @@ class SurveyService:
         )
         surveys = result.scalars().all()
 
+        logger.info(
+            "Fetching surveys for user id: %s with survey count: %s",
+            current_user.id, len(surveys),
+        )
         return SurveyListResponse(
             total=len(surveys),
             surveys=[SurveyResponse.model_validate(s) for s in surveys],
@@ -288,6 +297,7 @@ class SurveyService:
         db: AsyncSession,
     ) -> None:
         """Hard-delete a survey — 404/403 enforced."""
+        logger.info("Deleting survey id: %s for user id: %s", survey_id, current_user.id)
         result = await db.execute(select(Survey).where(Survey.id == survey_id))
         survey = result.scalar_one_or_none()
 
@@ -333,6 +343,10 @@ class SurveyService:
             import json
             content_str = json.dumps([q.model_dump() for q in questions], indent=2)
 
+        logger.info(
+            "Survey exported: survey_id=%s user_id=%s format=%s",
+            survey.id, current_user.id, export_format.lower(),
+        )
         return ExportSurveyResponse(
             survey_id=survey.id,
             workspace_id=survey.workspace_id,
@@ -349,6 +363,7 @@ class SurveyService:
         db: AsyncSession,
     ) -> PublicSurveyDetailResponse:
         """Retrieve public details of a survey for external respondents without login."""
+        logger.info("Public survey requested: survey id: %s", survey_id)
         result = await db.execute(select(Survey).where(Survey.id == survey_id))
         survey = result.scalar_one_or_none()
 
@@ -428,6 +443,10 @@ class SurveyService:
         )
         responses = result.scalars().all()
 
+        logger.info(
+            "Survey responses fetched: survey_id=%s user_id=%s count=%s",
+            survey_id, current_user.id, len(responses),
+        )
         return SurveyResponsesListResponse(
             survey_id=survey_id,
             total_responses=len(responses),

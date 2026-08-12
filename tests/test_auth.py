@@ -772,6 +772,109 @@ async def test_change_password_success_and_failure(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_verify_registration_otp_success_enqueues_welcome_email(
+    db_session: AsyncSession,
+    stub_enqueue_email_job,
+):
+    user = await create_user(
+        db_session,
+        username="welcome-email@axiorapulse.com",
+        register_mfa=False,
+    )
+    user.register_otp = 654321
+    user.register_otp_expiry = datetime.now(tz=timezone.utc) + timedelta(minutes=5)
+    await db_session.commit()
+
+    response = await auth_service.verify_otp(
+        VerifyOTPRequest(id=user.id, otp=654321, flow="register"),
+        db_session,
+    )
+
+    assert response.status == "success"
+    stub_enqueue_email_job.assert_called_once_with(
+        "registration_success",
+        to_email=user.username,
+        display_name=user.display_name,
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_registration_otp_failure_does_not_enqueue_welcome_email(
+    db_session: AsyncSession,
+    stub_enqueue_email_job,
+):
+    user = await create_user(
+        db_session,
+        username="welcome-email-fail@axiorapulse.com",
+        register_mfa=False,
+    )
+    user.register_otp = 654321
+    user.register_otp_expiry = datetime.now(tz=timezone.utc) + timedelta(minutes=5)
+    await db_session.commit()
+
+    response = await auth_service.verify_otp(
+        VerifyOTPRequest(id=user.id, otp=111111, flow="register"),
+        db_session,
+    )
+
+    assert response.status == "failed"
+    stub_enqueue_email_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_reset_enqueues_password_changed_email(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    stub_enqueue_email_job,
+):
+    user = await create_user(db_session, username="reset-email@axiorapulse.com")
+    reset_token = jwt.encode(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "scope": "password_reset",
+            "iat": datetime.now(tz=timezone.utc),
+            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=10),
+        },
+        os.getenv("JWT_SECRET_KEY"),
+        algorithm=os.getenv("JWT_ALGORITHM"),
+    )
+
+    response = await client.post(
+        "/api/v1/auth/forgot-password/reset",
+        json={"reset_token": reset_token, "new_password": "NewPass@12345"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    stub_enqueue_email_job.assert_called_once()
+    call_args, call_kwargs = stub_enqueue_email_job.call_args
+    assert call_args == ("password_reset_success",)
+    assert call_kwargs["to_email"] == user.username
+    assert call_kwargs["changed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_change_password_enqueues_password_changed_email(
+    db_session: AsyncSession,
+    stub_enqueue_email_job,
+):
+    user = await create_user(db_session, username="change-password-email@axiorapulse.com")
+
+    response = await auth_service.change_password(
+        user,
+        ChangePasswordRequest(current_password="Test@12345", new_password="NewPass@12345"),
+        db_session,
+    )
+
+    assert response.status == "success"
+    stub_enqueue_email_job.assert_called_once_with(
+        "password_reset_success",
+        to_email=user.username,
+        changed_at=user.password_changed_at,
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_current_user_validates_tokens_and_revocation(db_session: AsyncSession):
     user = await create_user(db_session, username="dependency@axiorapulse.com")
     token = jwt.encode(

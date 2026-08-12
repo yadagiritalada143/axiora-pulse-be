@@ -25,7 +25,7 @@ class WorkspaceMentorState(BaseModel):
         "founder_validation_goal": "validate my idea",
         "geography": "global"
     })
-    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     validation_result: Optional[Dict[str, Any]] = None
 
 
@@ -162,6 +162,10 @@ class MentorService:
         user_message: str,
         attachments: Optional[List[AttachmentInput]] = None,
     ) -> WorkspaceMentorState:
+        logger.info(
+            "[MentorService] Processing message for workspace '%s' (state=%s, message_len=%s)",
+            state.workspace_id, state.state, len(user_message or ""),
+        )
         # Process incoming attachments (PDFs via pdfplumber, Docs, Links, Images)
         processed_attachments, attachment_text_context, image_data_uris = (
             await attachment_processor.process_attachments(
@@ -261,7 +265,11 @@ class MentorService:
                     if v is not None and v != "":
                         state.idea[k] = v
 
-                logger.info(f"[MentorService] Workspace '{state.workspace_id}' Idea updated: {state.idea}")
+                # Log which fields changed, never the founder's idea content itself.
+                logger.info(
+                    "[MentorService] Workspace '%s' idea fields updated: %s",
+                    state.workspace_id, sorted(parsed.keys()),
+                )
 
                 # Programmatic check of required fields
                 required = ["idea_title", "idea_description", "problem_statement"]
@@ -326,7 +334,7 @@ class MentorService:
                     "content": "I'm here! Tell me more about your startup idea, and we can validate it together."
                 })
         except Exception as e:
-            logger.error(f"[MentorService] Failed to generate mentor response: {e}")
+            logger.error(f"[MentorService] Failed to generate mentor response: {e}", exc_info=True)
             state.conversation_history.append({
                 "role": "assistant",
                 "content": "I'm having trouble connecting to my brain right now. Can you try again?"

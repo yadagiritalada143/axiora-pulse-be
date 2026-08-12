@@ -207,6 +207,7 @@ class SurveyIntelligenceAgent(BaseAgent):
 
     agent_name = "survey_intelligence_agent"
     skill_name = "survey_intelligence_skill"
+    max_tokens = 8192
 
     def __init__(self, llm_gateway: LLMGateway) -> None:
         super().__init__(llm_gateway)
@@ -266,6 +267,9 @@ class SurveyIntelligenceAgent(BaseAgent):
         4. Disclaimer enforcement
         5. Forbidden advice detection
         """
+        # Log raw response size to help diagnose truncation
+        logger.info(f"[{self.agent_name}] Raw LLM response length: {len(raw_content)} chars")
+
         val_result = self.validator.validate_all(
             raw_content=raw_content,
             required_fields=REQUIRED_SURVEY_FIELDS,
@@ -279,7 +283,7 @@ class SurveyIntelligenceAgent(BaseAgent):
         if not val_result.is_valid:
             logger.warning(
                 f"[{self.agent_name}] Validation failed with errors: {val_result.errors}. "
-                "Applying fallback structured output."
+                f"Raw content tail (last 300 chars): ...{raw_content[-300:]}"
             )
 
         data = val_result.data
@@ -288,13 +292,24 @@ class SurveyIntelligenceAgent(BaseAgent):
         if "survey_quality_score" not in data or data["survey_quality_score"] is None:
             data["survey_quality_score"] = float(data.get("score", 70.0))
 
-        # Ensure questions field is a list
-        if not isinstance(data.get("questions"), list):
-            data["questions"] = DEFAULT_SURVEY_OUTPUT["questions"]
-
-        # Ensure multi-phase sections exist or populate default
-        if "survey_structure" not in data or not isinstance(data.get("survey_structure"), dict):
-            data["survey_structure"] = DEFAULT_SURVEY_OUTPUT["survey_structure"]
+        # Robust questions field extraction (primary: top-level, fallback: survey_structure.sections)
+        if not isinstance(data.get("questions"), list) or not data["questions"]:
+            extracted_qs = []
+            survey_struct = data.get("survey_structure")
+            if isinstance(survey_struct, dict) and "sections" in survey_struct:
+                for sec in survey_struct.get("sections", []):
+                    if isinstance(sec, dict) and "questions" in sec:
+                        for q in sec.get("questions", []):
+                            if isinstance(q, dict) and "question_text" in q:
+                                extracted_qs.append(q)
+            if extracted_qs:
+                logger.info(f"[{self.agent_name}] Recovered {len(extracted_qs)} questions from survey_structure.sections.")
+                data["questions"] = extracted_qs
+            else:
+                logger.warning(f"[{self.agent_name}] ⚠ No AI questions found — applying static DEFAULT fallback. Check token limits or LLM errors.")
+                data["questions"] = DEFAULT_SURVEY_OUTPUT["questions"]
+        else:
+            logger.info(f"[{self.agent_name}] ✓ Successfully generated {len(data['questions'])} live AI questions.")
 
         if val_result.warnings:
             logger.info(f"[{self.agent_name}] Validation warnings: {val_result.warnings}")

@@ -85,6 +85,7 @@ class WorkspaceService:
         )
 
         db.add(workspace)
+        logger.info(f"Creating workspace for user: {current_user.id}")
         await db.flush()   # Populate `workspace.id` without committing yet.
         await db.refresh(workspace)
 
@@ -109,7 +110,7 @@ class WorkspaceService:
             .order_by(Workspace.created_at.desc())
         )
         workspaces = result.scalars().all()
-
+        logger.info(f"Fetching the workspaces for user id: {current_user.id} with workspace count: {len(workspaces)}")
         return WorkspaceListResponse(
             total=len(workspaces),
             workspaces=[WorkspaceResponse.model_validate(w) for w in workspaces],
@@ -138,15 +139,17 @@ class WorkspaceService:
     ) -> WorkspaceResponse:
         """Update name and/or description of an owned workspace — 404/403 enforced."""
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
-
+        logger.info(f"Updating workspace for user id: {current_user.id} and workspace id: {workspace_id}")
         new_name = payload.name.strip()
         if new_name != workspace.name:
+            
             await self._ensure_unique_name(new_name, current_user, db, exclude_workspace_id=workspace_id)
 
+    
         workspace.name = new_name
         workspace.description = payload.description.strip() if payload.description else None
         workspace.updated_at = datetime.now(timezone.utc)
-
+        
         await db.flush()
         await db.refresh(workspace)
 
@@ -286,6 +289,10 @@ class WorkspaceService:
     ) -> WorkspaceChatResponse:
         """Process AI Mentor message inside a workspace."""
         workspace = await self._fetch_owned_workspace(workspace_id, current_user, db)
+        logger.info(
+            "Mentor chat received: workspace_id=%s user_id=%s message_len=%s attachments=%s",
+            workspace_id, current_user.id, len(payload.message or ""), len(payload.attachments or []),
+        )
 
         ws_state = WorkspaceMentorState(
             workspace_id=str(workspace.id),
@@ -342,6 +349,10 @@ class WorkspaceService:
                     assistant_reply = msg.get("content", "")
                     break
 
+        logger.info(
+            "Mentor chat processed: workspace_id=%s user_id=%s new_state=%s",
+            workspace_id, current_user.id, workspace.state,
+        )
         return WorkspaceChatResponse(
             reply=assistant_reply,
             workspace_id=workspace.id,
@@ -397,6 +408,10 @@ class WorkspaceService:
         await db.flush()
         await db.refresh(workspace)
 
+        logger.info(
+            "Mentor dialogue reset: workspace_id=%s user_id=%s",
+            workspace_id, current_user.id,
+        )
         return WorkspaceStateResponse.model_validate(workspace)
 
     # ── Report Export Sub-resource ────────────────────────────────────────────
@@ -425,6 +440,10 @@ class WorkspaceService:
             validation_result=workspace.validation_result,
             idea_info=idea_info,
             export_format=export_format
+        )
+        logger.info(
+            "Report exported: workspace_id=%s user_id=%s agent=%s format=%s",
+            workspace_id, current_user.id, agent_name, export_format,
         )
 
         return Response(
@@ -509,11 +528,15 @@ class WorkspaceService:
             Workspace.user_id == current_user.id,
             Workspace.name == name,
         )
+        logger.info(f"Checking for unique name: {name} for user id: {current_user.id}")
         if exclude_workspace_id is not None:
             query = query.where(Workspace.id != exclude_workspace_id)
-
         result = await db.execute(query)
         if result.scalar_one_or_none() is not None:
+            logger.warning(
+                "Workspace conflict: user_id=%s already has a workspace named %r (exclude_id=%s)",
+                current_user.id, name, exclude_workspace_id
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"You already have a workspace named '{name}'.",
@@ -536,7 +559,7 @@ class WorkspaceService:
             select(Workspace).where(Workspace.id == workspace_id)
         )
         workspace = result.scalar_one_or_none()
-
+        logger.info(f"Workspace fetched for id: {workspace_id}")
         if workspace is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -544,6 +567,10 @@ class WorkspaceService:
             )
 
         if workspace.user_id != current_user.id:
+            logger.warning(
+                "Unauthorized workspace access attempt: workspace_id=%s by user_id=%s (owner=%s)",
+                workspace_id, current_user.id, workspace.user_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this workspace.",

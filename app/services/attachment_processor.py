@@ -53,6 +53,11 @@ class AttachmentProcessor:
         if not attachments:
             return processed_items, "", image_data_uris
 
+        logger.info(
+            "[AttachmentProcessor] Processing %s attachment(s) for workspace %s",
+            len(attachments), workspace_id,
+        )
+
         for idx, item in enumerate(attachments, start=1):
             att_type = (item.type or "").lower().strip()
             name = item.name or f"Attachment_{idx}"
