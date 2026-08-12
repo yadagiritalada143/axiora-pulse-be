@@ -45,7 +45,7 @@ _database_url = os.getenv("DATABASE_URL", "")
 config.set_main_option("sqlalchemy.url", _database_url.replace("%", "%%"))
 
 # Set up Python logging from alembic.ini [loggers] section
-if config.config_file_name is not None:
+if config.config_file_name is not None and config.get_main_option("skip_logging_config") != "true":
     fileConfig(config.config_file_name)
 
 # Tell Alembic which metadata to inspect for autogenerate

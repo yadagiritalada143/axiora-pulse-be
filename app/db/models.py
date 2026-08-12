@@ -267,10 +267,10 @@ class WorkspaceAttachment(Base):
         Integer, primary_key=True, autoincrement=True, index=True
     )
     user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     workspace_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     file_name: Mapped[str] = mapped_column(String(512), nullable=False)
     file_type: Mapped[str] = mapped_column(

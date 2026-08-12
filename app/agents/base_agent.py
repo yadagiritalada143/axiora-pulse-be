@@ -31,6 +31,7 @@ class BaseAgent(ABC):
 
     agent_name: str = "base_agent"
     skill_name: str = ""
+    max_tokens: int = 4096
 
     def __init__(self, llm_gateway: LLMGateway) -> None:
         self.llm = llm_gateway
@@ -90,7 +91,7 @@ class BaseAgent(ABC):
             user_prompt=prompt,
             response_format="json",
             temperature=0.3,
-            max_tokens=2048,
+            max_tokens=self.max_tokens,
             stream=stream or (stream_callback is not None),
         )
 

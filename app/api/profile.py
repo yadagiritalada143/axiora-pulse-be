@@ -43,6 +43,11 @@ async def update_current_user_profile(
     if email != current_user.username:
         existing = await db.execute(select(User.id).where(User.username == email, User.id != current_user.id))
         if existing.scalar_one_or_none() is not None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Profile update conflict: user_id=%s tried to change email to %r but it already exists",
+                current_user.id, email
+            )
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
         current_user.username = email
 

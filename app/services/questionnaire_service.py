@@ -25,6 +25,7 @@ class QuestionnaireService:
             select(InteractiveQuestionnaire).order_by(InteractiveQuestionnaire.id.asc())
         )
         questions = result.scalars().all()
+        logger.info("Fetched %s questionnaire questions", len(questions))
         return [InteractiveQuestionnaireResponse.model_validate(question) for question in questions]
 
     async def submit_answers(

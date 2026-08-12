@@ -49,10 +49,11 @@ def _mask_database_url(url: str) -> str:
 # ── Engine ─────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
     _DATABASE_URL,
-    echo=False,          # Set to True to log all SQL queries (debug only)
-    pool_pre_ping=True,  # Detect stale connections before handing them out
+    echo=False,               # Set to True to log all SQL queries (debug only)
+    pool_pre_ping=True,       # Detect stale connections before handing them out
     pool_size=10,
     max_overflow=20,
+    hide_parameters=True, 
 )
 
 # ── Session factory ────────────────────────────────────────────────────────────
@@ -64,6 +65,8 @@ AsyncSessionLocal = async_sessionmaker(
     autocommit=False,
 )
 
+
+from fastapi import HTTPException
 
 # ── FastAPI dependency ─────────────────────────────────────────────────────────
 
@@ -78,8 +81,15 @@ async def get_db():  # type: ignore[return]
         try:
             yield session
             await session.commit()
+        except HTTPException as he:
+            logger.warning(
+                "HTTPException during request handling (status_code=%s): %s",
+                he.status_code, he.detail
+            )
+            await session.rollback()
+            raise he
         except Exception:
-            logger.exception("Database session error while handling request")
+            # Rollback only — the request-logging middleware in main.py will log the exception and return a 500 response.
             await session.rollback()
             raise
 
@@ -98,6 +108,7 @@ def _get_alembic_cfg() -> Config:
     # Without this, URL-encoded characters in the DB password crash configparser.
     safe_url = _DATABASE_URL.replace("%", "%%")
     cfg.set_main_option("sqlalchemy.url", safe_url)
+    cfg.set_main_option("skip_logging_config", "true")
     return cfg
 
 

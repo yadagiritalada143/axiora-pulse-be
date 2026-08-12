@@ -11,10 +11,11 @@ Health:       http://localhost:8000/health
 """
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -75,11 +76,14 @@ async def lifespan(app: FastAPI):
     _validate_security_config()
 
     # Apply any pending DB migrations (Alembic upgrade head)
-    await run_migrations()
-
-    # Seed default admin user account
-    async with AsyncSessionLocal() as session:
-        await seed_admin_user(session)
+    try:
+        await run_migrations()
+        # Seed default admin user account
+        async with AsyncSessionLocal() as session:
+            await seed_admin_user(session)
+    except Exception as exc:
+        logger.error("⚠ Database initialization/migration failed: %s", exc)
+        logger.warning("⚠ Server starting in degraded mode. Docs and non-DB endpoints remain accessible.")
 
     # Load all skill YAML files into the registry
     skill_registry.load_all()
@@ -193,6 +197,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Request logging ───────────────────────────────────────────────────────────
+# Logs one access line per request: method, path, status code, duration.
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.monotonic() - start) * 1000
+        logger.exception(
+            f"{request.method} {request.url.path} -> 500 ({duration_ms:.1f}ms)"
+        )
+        raise
+
+    duration_ms = (time.monotonic() - start) * 1000
+    logger.info(
+        f"{request.method} {request.url.path} -> {response.status_code} ({duration_ms:.1f}ms)"
+    )
+    return response
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────

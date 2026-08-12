@@ -1,5 +1,7 @@
 """Read-only administrator operations."""
 
+import logging
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,8 @@ from app.models.admin_models import (
     AdminUserPagination,
     AdminUserResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AdminService:
@@ -40,6 +44,10 @@ class AdminService:
 
         total = (await db.execute(total_statement)).scalar_one()
         rows = (await db.execute(users_statement)).all()
+        logger.info(
+            "Admin user list fetched: %s of %s users (limit=%s, offset=%s, search=%s)",
+            len(rows), total, limit, offset, bool(search),
+        )
         users = [
             AdminUserResponse(
                 id=user.id,
