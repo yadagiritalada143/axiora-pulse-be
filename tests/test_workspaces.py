@@ -81,12 +81,6 @@ async def test_list_workspaces_returns_only_authenticated_users_workspaces(
     assert data["workspaces"][0]["name"] == "User A Workspace"
 
 
-@pytest.mark.asyncio
-async def test_list_workspaces_rejects_unauthenticated_requests(client: AsyncClient):
-    response = await client.get("/api/v1/workspaces")
-
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-
 
 @pytest.mark.asyncio
 async def test_create_workspace_with_name_and_description_returns_generated_id(

@@ -88,7 +88,7 @@ class AuthActions(Base):
     """Per-user auth-gate flags returned on every successful regular-user login.
 
     payment              – True  → user has completed payment (default: True)
-    interactive_questions – False → user has not yet answered onboarding questions (default: False)
+    interactive_questions – True → user has answered onboarding questions (default: True)
     """
 
     __tablename__ = "auth_actions"
@@ -104,7 +104,7 @@ class AuthActions(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
     interactive_questions: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
+        Boolean, nullable=False, default=True, server_default="true"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
@@ -308,9 +308,15 @@ class Survey(Base):
     workspace_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    public_token: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True, default=lambda: uuid.uuid4().hex
+    )
     survey_link: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     questions: Mapped[list] = mapped_column(
         JSON, nullable=False, default=list
+    )
+    analysis_result: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow

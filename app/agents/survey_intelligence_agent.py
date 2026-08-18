@@ -19,8 +19,9 @@ from typing import Any
 
 from app.agents.base_agent import BaseAgent
 from app.guardrails.output_guardrails import OutputValidator
-from app.llm.llm_gateway import LLMGateway
+from app.llm.llm_gateway import LLMGateway, LLMRequest
 from app.models.agent_models import AgentInput
+from app.skills.skill_registry import skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -327,4 +328,71 @@ class SurveyIntelligenceAgent(BaseAgent):
             return float(score_val)
         except (ValueError, TypeError):
             return 70.0
+
+    # ── Post-Link Intelligence (SI.11–SI.44) ──────────────────────────────────
+
+    async def run_post_link_analysis(
+        self,
+        survey_id: str,
+        survey_title: str,
+        survey_objective: str,
+        questions: list[dict[str, Any]],
+        responses: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Executes post-survey-link response intelligence analysis (SI.11–SI.44)
+        using collected survey responses. Evaluates fraud risk, response quality,
+        bias, customer intelligence, customer validation, and GTM handoff.
+        """
+        import json
+        logger.info(
+            f"[{self.agent_name}] ▶ Running post-link response intelligence analysis "
+            f"for survey_id={survey_id} ({len(responses)} responses)"
+        )
+
+        post_skill = skill_registry.get("survey_intelligence_post_surveylink_skill")
+        if not post_skill:
+            raise ValueError(f"[{self.agent_name}] Post-link skill 'survey_intelligence_post_surveylink_skill' not found.")
+
+        def _json_converter(obj: Any) -> Any:
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            if hasattr(obj, "__dict__"):
+                return obj.__dict__
+            return str(obj)
+
+        prompt = post_skill.build_prompt(
+            survey_id=str(survey_id),
+            survey_title=survey_title or "Customer Validation Survey",
+            survey_objective=survey_objective or "Validate problem statement and customer demand",
+            response_count=len(responses),
+            questions_json=json.dumps(questions, indent=2, default=_json_converter),
+            responses_json=json.dumps(responses, indent=2, default=_json_converter),
+        )
+
+        llm_request = LLMRequest(
+            system_prompt=(
+                f"You are the {self.agent_name}, executing post-survey-link response intelligence "
+                f"and customer validation framework (SI.11-SI.44)."
+            ),
+            user_prompt=prompt,
+            response_format="json",
+            temperature=0.2,
+            max_tokens=self.max_tokens,
+        )
+
+        llm_response = await self.llm.complete(llm_request)
+        if not llm_response.success:
+            logger.error(f"[{self.agent_name}] LLM call failed for post-link analysis: {llm_response.error}")
+            return {"error": llm_response.error or "LLM call failed for post-link analysis."}
+
+        try:
+            raw_parsed = json.loads(llm_response.content)
+            if isinstance(raw_parsed, dict):
+                return raw_parsed
+            return {"error": "Parsed output is not a JSON object", "raw": llm_response.content}
+        except Exception as e:
+            logger.error(f"[{self.agent_name}] Failed to parse post-link LLM json output: {e}")
+            return {"error": f"JSON parse error: {e}", "raw": llm_response.content}
+
 

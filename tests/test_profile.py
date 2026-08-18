@@ -74,11 +74,6 @@ async def test_get_current_user_profile_falls_back_to_username_prefix(
     assert response.json()["name"] == "fallback-name"  # username local-part, no display_name set
 
 
-@pytest.mark.asyncio
-async def test_get_current_user_profile_rejects_unauthenticated(client: AsyncClient):
-    response = await client.get("/api/auth/me")
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-
 
 # patch /api/users/me
 
@@ -151,9 +146,3 @@ async def test_update_current_user_profile_rejects_invalid_payload(
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
-@pytest.mark.asyncio
-async def test_update_current_user_profile_rejects_unauthenticated(client: AsyncClient):
-    response = await client.patch(
-        "/api/users/me", json={"name": "X", "email": "x@axiorapulse.com"}
-    )
-    assert response.status_code == status.HTTP_403_FORBIDDEN

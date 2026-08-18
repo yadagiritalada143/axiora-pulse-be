@@ -145,6 +145,10 @@ class MarketResearchAgent(BaseAgent):
         except (ValueError, TypeError):
             parsed["confidence"] = 0.5
 
+        parsed.setdefault("research_sources", [])
+        if not isinstance(parsed.get("research_sources"), list):
+            parsed["research_sources"] = []
+
         # ── Ensure list fields are arrays of strings ───────────────────────────
         for field in (
             "secondary_segments",
@@ -159,6 +163,7 @@ class MarketResearchAgent(BaseAgent):
                 parsed[field] = [str(val)] if val else []
 
         return parsed
+
 
     # ── Score extractor ────────────────────────────────────────────────────────
 

@@ -54,6 +54,22 @@ def _cleanup_local_upload_files():
         else:
             entry.unlink(missing_ok=True)
 
+@pytest.fixture(autouse=True)
+def _reset_dependency_overrides():
+    """Guarantee app.dependency_overrides is empty before and after every test.
+
+    Several tests mutate app.dependency_overrides[get_current_user] directly
+    via a local `authenticate_as()`/`_mock_current_user` helper instead of
+    going through the `client` fixture's teardown. Relying solely on that
+    fixture's clear() makes cleanup dependent on test/fixture ordering; this
+    autouse fixture removes that dependency so an override set in one test
+    can never leak into another regardless of execution order.
+    """
+    app.dependency_overrides.clear()
+    yield
+    app.dependency_overrides.clear()
+
+
 @pytest.fixture
 def stub_enqueue_email_job():
     """Replace the fire-and-forget transactional email dispatcher with a

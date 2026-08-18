@@ -49,6 +49,36 @@ class OrchestrationRequest(BaseModel):
     idea: IdeaInput
 
 
+# ── Research Trace Models ──────────────────────────────────────────────────────
+
+class ResearchQueryTrace(BaseModel):
+    """A search query executed by an agent during orchestration."""
+
+    agent_name: str
+    query: str
+    status: str = "completed"                       # in_progress | completed | failed
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ResearchSourceTrace(BaseModel):
+    """A research source (web URL / citation) retrieved during orchestration."""
+
+    agent_name: str
+    title: Optional[str] = None
+    url: str
+    snippet: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ResearchTraceResponse(BaseModel):
+    """API payload for research queries and sources tracked during orchestration."""
+
+    run_id: str
+    queries: list[ResearchQueryTrace] = Field(default_factory=list)
+    sources: list[ResearchSourceTrace] = Field(default_factory=list)
+    is_active: bool = False
+
+
 # ── Result Models ──────────────────────────────────────────────────────────────
 
 class ValidationResult(BaseModel):
@@ -66,6 +96,8 @@ class ValidationResult(BaseModel):
     agent_results: dict[str, Any]
     mentor_summary: str
     inferred_idea: Optional[IdeaInput] = None
+    research_queries: list[ResearchQueryTrace] = Field(default_factory=list)
+    research_sources: list[ResearchSourceTrace] = Field(default_factory=list)
     disclaimer: str = (
         "This is educational and decision-support guidance only. "
         "It is not legal, tax, accounting, banking, investment, loan, "
@@ -86,3 +118,4 @@ class OrchestrationResponse(BaseModel):
     error: Optional[str] = None
     started_at: datetime
     completed_at: Optional[datetime] = None
+

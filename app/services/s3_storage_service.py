@@ -229,8 +229,11 @@ class S3StorageService:
         """
         if not self._s3_client:
             logger.info("[S3StorageService] No S3 client — skipping remote delete for key: %s", s3_key)
-            # Attempt local deletion
-            local_path = os.path.join("uploads", *s3_key.split("/"))
+            # normalize the leading segment so this matches on case-sensitive filesystems too.
+            key_parts = s3_key.split("/")
+            if key_parts and key_parts[0] == "Assets":
+                key_parts[0] = "assets"
+            local_path = os.path.join("uploads", *key_parts)
             try:
                 if os.path.exists(local_path):
                     os.remove(local_path)

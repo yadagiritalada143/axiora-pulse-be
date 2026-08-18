@@ -1,7 +1,4 @@
-"""
-OpenAI Provider – alternative to HuggingFace.
-Supports stream=True for real-time token/chunk output.
-"""
+import json
 import logging
 import os
 from typing import AsyncGenerator
@@ -143,18 +140,76 @@ class OpenAIProvider(LLMGateway):
         if request.response_format == "json":
             kwargs["response_format"] = {"type": "json_object"}
 
-        try:
-            response = await self.client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content or ""
-            usage = response.usage
+        if request.tools:
+            kwargs["tools"] = request.tools
 
+        try:
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            max_tool_iterations = 5
+
+            for loop_idx in range(max_tool_iterations):
+                response = await self.client.chat.completions.create(**kwargs)
+                usage = response.usage
+                if usage:
+                    total_prompt_tokens += usage.prompt_tokens
+                    total_completion_tokens += usage.completion_tokens
+
+                choice = response.choices[0]
+                message = choice.message
+
+                # Check if model emitted tool calls
+                if choice.finish_reason == "tool_calls" and message.tool_calls:
+                    logger.info(f"[OpenAI Tool Loop {loop_idx+1}] Model requested {len(message.tool_calls)} tool call(s).")
+                    messages.append(message)
+
+                    for tool_call in message.tool_calls:
+                        tool_name = tool_call.function.name
+                        try:
+                            tool_args = json.loads(tool_call.function.arguments or "{}")
+                        except Exception as parse_err:
+                            logger.warning(f"[OpenAI Tool Loop] Error parsing args for tool '{tool_name}': {parse_err}")
+                            tool_args = {}
+
+                        logger.info(f"[OpenAI Tool Call] Executing '{tool_name}' with args={tool_args}")
+
+                        # Lazy import to avoid circular dependency
+                        from app.mcp.tool_registry import mcp_tool_registry
+                        tool_result = await mcp_tool_registry.call_tool(
+                            tool_name, caller_agent=request.caller_agent, **tool_args
+                        )
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(tool_result),
+                        })
+
+                    # Update kwargs with extended conversation thread for next iteration
+                    kwargs["messages"] = messages
+                    continue
+
+                # Normal completion (no further tool calls)
+                content = message.content or ""
+                return LLMResponse(
+                    content=content,
+                    model=model,
+                    provider="openai",
+                    tokens_input=total_prompt_tokens,
+                    tokens_output=total_completion_tokens,
+                    total_tokens=total_prompt_tokens + total_completion_tokens,
+                    success=True,
+                )
+
+            # Reached max loop iterations fallback
+            content = message.content or ""
             return LLMResponse(
                 content=content,
                 model=model,
                 provider="openai",
-                tokens_input=usage.prompt_tokens if usage else 0,
-                tokens_output=usage.completion_tokens if usage else 0,
-                total_tokens=usage.total_tokens if usage else 0,
+                tokens_input=total_prompt_tokens,
+                tokens_output=total_completion_tokens,
+                total_tokens=total_prompt_tokens + total_completion_tokens,
                 success=True,
             )
 
@@ -168,3 +223,4 @@ class OpenAIProvider(LLMGateway):
             logger.error(f"[OpenAI] Unexpected error: {e}", exc_info=True)
             return LLMResponse(content="", model=model, provider="openai",
                                success=False, error="Unexpected error.")
+

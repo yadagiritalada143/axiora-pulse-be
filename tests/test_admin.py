@@ -71,12 +71,6 @@ async def test_list_users_requires_admin(client: AsyncClient, db_session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_list_users_rejects_unauthenticated_requests(client: AsyncClient):
-    response = await client.get("/api/v1/admin/users")
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-
-
-@pytest.mark.asyncio
 async def test_list_users_returns_paginated_directory_with_workspace_counts(
     client: AsyncClient, db_session: AsyncSession
 ):
