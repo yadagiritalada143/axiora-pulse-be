@@ -16,6 +16,9 @@ class LLMRequest(BaseModel):
     # For HuggingFace / Llama we rely on prompt engineering instead.
     response_format: str = "text"   # text | json
     images: Optional[list[str]] = None  # Base64 data URIs or image URLs for vision models
+    tools: Optional[list[dict]] = None  # OpenAI Function Calling tool definitions
+    caller_agent: Optional[str] = None  # Agent identity initiating request
+
 
 
 

@@ -10,8 +10,12 @@ Routes:
   GET    /api/v1/surveys/workspace/{workspace_id}    → get_survey_by_workspace_id
   GET    /api/v1/surveys/{survey_id}/export           → export_survey
   GET    /api/v1/surveys/{survey_id}/responses        → get_survey_responses
-  GET    /api/v1/surveys/public/{survey_id}           → get_public_survey (Unauthenticated)
-  POST   /api/v1/surveys/public/{survey_id}/submit    → submit_public_survey (Unauthenticated)
+  GET    /api/v1/surveys/public/{token}                → get_public_survey (Unauthenticated)
+  POST   /api/v1/surveys/public/{token}/submit         → submit_public_survey (Unauthenticated)
+
+The public routes are keyed by Survey.public_token (an opaque, unguessable
+value) rather than the internal sequential `id`, so a respondent can't
+enumerate other users' surveys by incrementing the URL.
 """
 import logging
 
@@ -28,6 +32,7 @@ from app.models.survey_models import (
     SaveAllSurveyQuestionsRequest,
     SubmitPublicSurveyRequest,
     SubmitPublicSurveyResponse,
+    SurveyAnalysisResponse,
     SurveyListResponse,
     SurveyResponse,
     SurveyResponsesListResponse,
@@ -98,7 +103,7 @@ async def get_survey_by_workspace_id(
 
 # ── Public Survey Details (Unauthenticated for external survey takers)
 @router.get(
-    "/public/{survey_id}",
+    "/public/{token}",
     response_model=PublicSurveyDetailResponse,
     status_code=status.HTTP_200_OK,
     summary="Get public survey details for external respondents",
@@ -107,15 +112,15 @@ async def get_survey_by_workspace_id(
 @limiter.limit("120/minute")
 async def get_public_survey(
     request: Request,
-    survey_id: int,
+    token: str,
     db: AsyncSession = Depends(get_db),
 ) -> PublicSurveyDetailResponse:
-    return await survey_service.get_public_survey(survey_id, db)
+    return await survey_service.get_public_survey(token, db)
 
 
 # ── Submit Public Survey Answers (Unauthenticated for external survey takers)
 @router.post(
-    "/public/{survey_id}/submit",
+    "/public/{token}/submit",
     response_model=SubmitPublicSurveyResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Submit answers to a public survey",
@@ -124,11 +129,11 @@ async def get_public_survey(
 @limiter.limit("30/minute")
 async def submit_public_survey(
     request: Request,
-    survey_id: int,
+    token: str,
     payload: SubmitPublicSurveyRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SubmitPublicSurveyResponse:
-    return await survey_service.submit_public_survey(survey_id, payload, db)
+    return await survey_service.submit_public_survey(token, payload, db)
 
 
 # ── Get Single Survey by ID (Authenticated Owner)
@@ -224,3 +229,51 @@ async def get_survey_responses(
     db: AsyncSession = Depends(get_db),
 ) -> SurveyResponsesListResponse:
     return await survey_service.get_survey_responses(survey_id, current_user, db)
+
+
+# ── Run Post-Link Response Intelligence Analysis (SI.11–SI.44)
+@router.post(
+    "/{survey_id}/analyze",
+    response_model=SurveyAnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Run post-survey-link response intelligence analysis",
+    description="Triggers the Survey Intelligence Agent to evaluate collected responses across fraud detection, quality scoring, customer intelligence, customer validation, and GTM handoff (SI.11–SI.44). Requires at least 1 response.",
+)
+@limiter.limit("10/minute")
+async def analyze_survey(
+    request: Request,
+    survey_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SurveyAnalysisResponse:
+    result = await survey_service.run_post_link_analysis(survey_id, current_user, db)
+    return SurveyAnalysisResponse(
+        survey_id=survey_id,
+        status="success",
+        analysis_result=result,
+    )
+
+
+# ── Get Stored Post-Link Analysis Result
+@router.get(
+    "/{survey_id}/analysis",
+    response_model=SurveyAnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get saved post-link analysis result",
+    description="Retrieves the saved SI.11–SI.44 post-link response intelligence analysis for a survey.",
+)
+@limiter.limit("60/minute")
+async def get_survey_analysis(
+    request: Request,
+    survey_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SurveyAnalysisResponse:
+    survey = await survey_service.get_survey_by_id(survey_id, current_user, db)
+    analysis = survey.analysis_result or {}
+    return SurveyAnalysisResponse(
+        survey_id=survey_id,
+        status="success",
+        analysis_result=analysis,
+    )
+

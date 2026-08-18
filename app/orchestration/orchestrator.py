@@ -28,6 +28,7 @@ from app.orchestration.context_builder import context_builder
 from app.orchestration.planner import planner
 from app.orchestration.result_aggregator import result_aggregator
 from app.orchestration.validation_engine import validation_engine
+from app.services.research_trace_service import research_trace_service
 
 # ── Agent Registry ─────────────────────────────────────────────────────────────
 from app.agents.idea_validation_agent import IdeaValidationAgent
@@ -84,6 +85,10 @@ class Orchestrator:
                 f"model: {llm_gateway.get_default_model()}"
             )
 
+            # ── Step 3.5: Initialise research trace for this run ───────────────
+            research_trace_service.start_run_trace(run_id)
+            research_trace_service.set_context(run_id=run_id)
+
             # ── Step 4: Execute agents in sequence ─────────────────────────────
             agent_outputs = []
             for agent_name in agent_names:
@@ -96,6 +101,7 @@ class Orchestrator:
                     continue
 
                 logger.info(f"[Orchestrator] Executing: {agent_name}")
+                research_trace_service.set_context(run_id=run_id, agent_name=agent_name)
                 agent = agent_class(llm_gateway)
                 output = await agent.run(agent_input)
                 agent_outputs.append(output)
@@ -107,6 +113,7 @@ class Orchestrator:
                 )
 
             if not agent_outputs:
+                research_trace_service.end_run_trace(run_id)
                 return self._failed_response(
                     run_id=run_id,
                     request=request,
@@ -123,6 +130,10 @@ class Orchestrator:
             # ── Step 7: Build final response ───────────────────────────────────
             completed_at = datetime.utcnow()
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+
+            # ── Step 7.5: Finalise research traces ─────────────────────────────
+            research_trace_service.end_run_trace(run_id)
+            trace_snapshot = research_trace_service.get_traces(run_id)
 
             validation_result = ValidationResult(
                 idea_id=request.idea_id,
@@ -142,6 +153,8 @@ class Orchestrator:
                     problem_statement=agent_input.problem_statement,
                     founder_evidence=agent_input.founder_evidence,
                 ),
+                research_queries=trace_snapshot.queries,
+                research_sources=trace_snapshot.sources,
             )
 
             logger.info(
@@ -166,6 +179,7 @@ class Orchestrator:
                 f"[Orchestrator] ✗ Run {run_id[:8]}… failed with unexpected error: {e}",
                 exc_info=True,
             )
+            research_trace_service.end_run_trace(run_id)
             return self._failed_response(
                 run_id=run_id,
                 request=request,

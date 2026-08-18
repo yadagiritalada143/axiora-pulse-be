@@ -57,27 +57,39 @@ from app.mcp.tools.report_tools import (
     get_report_resource,
 )
 
+# Server 6: Real-Time Web Search & Web Scraping
+from app.mcp.tools.web_tools import (
+    web_search,
+    scrape_webpage,
+    OPENAI_WEB_TOOL_SCHEMAS,
+)
+
 logger = logging.getLogger(__name__)
+
 
 # ── Agent Tool Permission Access Control Matrix ──────────────────────────────
 ALLOWED_AGENT_TOOLS: dict[str, set[str]] = {
-    "idea_validation_agent": {"get_idea_details", "save_agent_output"},
-    "market_research_agent": {"get_idea_details", "save_agent_output"},
+    "idea_validation_agent": {"get_idea_details", "save_agent_output", "web_search"},
+    "market_research_agent": {"get_idea_details", "save_agent_output", "web_search", "scrape_webpage"},
     "survey_intelligence_agent": {
         "get_idea_details",
         "create_survey_draft",
         "get_survey_responses",
         "save_agent_output",
+        "web_search",
     },
-    "gtm_strategy_agent": {"get_idea_details", "get_agent_outputs", "save_agent_output"},
-    "financial_readiness_agent": {"get_idea_details", "save_agent_output"},
+    "gtm_strategy_agent": {"get_idea_details", "get_agent_outputs", "save_agent_output", "web_search"},
+    "financial_readiness_agent": {"get_idea_details", "save_agent_output", "web_search"},
     "ai_mentor": {
         "get_agent_outputs",
         "get_latest_validation_result",
         "get_survey_responses",
         "generate_validation_report",
+        "web_search",
+        "scrape_webpage",
     },
 }
+
 
 
 class MCPToolRegistry:
@@ -177,8 +189,20 @@ class MCPToolRegistry:
         """List all registered MCP resource schemes."""
         return [f"{s}://" for s in self._resource_handlers.keys()]
 
+    def get_openai_tool_definitions(self, caller_agent: str | None = None) -> list[dict[str, Any]]:
+        """
+        Return OpenAI-compatible JSON tool schemas for all tools authorized
+        for the given caller_agent.
+        """
+        allowed = ALLOWED_AGENT_TOOLS.get(caller_agent, set()) if caller_agent else set(self._tools.keys())
+        tools_list = []
+        for tool_name in allowed:
+            if tool_name in OPENAI_WEB_TOOL_SCHEMAS:
+                tools_list.append(OPENAI_WEB_TOOL_SCHEMAS[tool_name])
+        return tools_list
+
     def _register_default_servers(self) -> None:
-        """Register all 5 Phase 1 internal MCP servers & resource schemes."""
+        """Register all Phase 1 & Phase 2 internal MCP servers & resource schemes."""
         # 1. Idea Context Server
         self.register_tool("get_idea_details", get_idea_details)
         self.register_tool("update_idea_status", update_idea_status)
@@ -210,6 +234,11 @@ class MCPToolRegistry:
         self.register_tool("get_report_status", get_report_status)
         self.register_tool("get_report_download_link", get_report_download_link)
         self.register_resource_handler("report", get_report_resource)
+
+        # 6. Real-Time Web Search & Scraping Server
+        self.register_tool("web_search", web_search)
+        self.register_tool("scrape_webpage", scrape_webpage)
+
 
 
 mcp_tool_registry = MCPToolRegistry()
