@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import status
 from httpx import AsyncClient
@@ -17,6 +19,7 @@ async def create_test_user(
     username: str,
     role: str = "user",
     display_name: str | None = None,
+    created_at: datetime | None = None,
 ) -> User:
     user = User(
         username=username,
@@ -25,6 +28,8 @@ async def create_test_user(
         display_name=display_name,
         register_mfa=True,
     )
+    if created_at is not None:
+        user.created_at = created_at
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
@@ -162,3 +167,120 @@ async def test_list_users_rejects_invalid_pagination_params(
 
     response_negative_offset = await client.get("/api/v1/admin/users", params={"offset": -1})
     assert response_negative_offset.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+# get /api/v1/admin/stats/user-growth
+
+@pytest.mark.asyncio
+async def test_user_growth_requires_admin(client: AsyncClient, db_session: AsyncSession):
+    user = await create_test_user(db_session, username="growth-nonadmin@axiorapulse.com")
+    authenticate_as(user)
+
+    response = await client.get("/api/v1/admin/stats/user-growth")
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_user_growth_by_month_buckets_and_zero_fills(
+    client: AsyncClient, db_session: AsyncSession
+):
+    admin = await create_test_user(
+        db_session, username="growth-month-admin@axiorapulse.com", role="admin"
+    )
+    await create_test_user(
+        db_session,
+        username="growth-jan-a@axiorapulse.com",
+        created_at=datetime(2025, 1, 10, tzinfo=timezone.utc),
+    )
+    await create_test_user(
+        db_session,
+        username="growth-jan-b@axiorapulse.com",
+        created_at=datetime(2025, 1, 20, tzinfo=timezone.utc),
+    )
+    await create_test_user(
+        db_session,
+        username="growth-mar@axiorapulse.com",
+        created_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
+    )
+    authenticate_as(admin)
+
+    response = await client.get(
+        "/api/v1/admin/stats/user-growth", params={"granularity": "month"}
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["granularity"] == "month"
+    periods = [point["period"] for point in data["series"]]
+    counts = {point["period"]: point["count"] for point in data["series"]}
+
+    assert counts["2025-01"] == 2
+    assert counts["2025-02"] == 0  # zero-filled gap month
+    assert counts["2025-03"] == 1
+    # Series is continuous and ascending from the first signup through the present.
+    assert periods == sorted(periods)
+    now = datetime.now(timezone.utc)
+    current = f"{now.year:04d}-{now.month:02d}"
+    assert periods[-1] == current
+    assert counts[current] >= 1  # the admin registered "now"
+
+
+@pytest.mark.asyncio
+async def test_user_growth_by_year_buckets_and_zero_fills(
+    client: AsyncClient, db_session: AsyncSession
+):
+    admin = await create_test_user(
+        db_session, username="growth-year-admin@axiorapulse.com", role="admin"
+    )
+    await create_test_user(
+        db_session,
+        username="growth-2024@axiorapulse.com",
+        created_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+    )
+    authenticate_as(admin)
+
+    response = await client.get(
+        "/api/v1/admin/stats/user-growth", params={"granularity": "year"}
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["granularity"] == "year"
+    counts = {point["period"]: point["count"] for point in data["series"]}
+    assert counts["2024"] == 1
+    now = datetime.now(timezone.utc)
+    if now.year > 2025:
+        assert counts["2025"] == 0  # zero-filled gap year
+    assert str(now.year) in counts  # current year is always present
+
+
+@pytest.mark.asyncio
+async def test_user_growth_defaults_to_month(
+    client: AsyncClient, db_session: AsyncSession
+):
+    admin = await create_test_user(
+        db_session, username="growth-default-admin@axiorapulse.com", role="admin"
+    )
+    authenticate_as(admin)
+
+    response = await client.get("/api/v1/admin/stats/user-growth")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["granularity"] == "month"
+
+
+@pytest.mark.asyncio
+async def test_user_growth_rejects_invalid_granularity(
+    client: AsyncClient, db_session: AsyncSession
+):
+    admin = await create_test_user(
+        db_session, username="growth-invalid-admin@axiorapulse.com", role="admin"
+    )
+    authenticate_as(admin)
+
+    response = await client.get(
+        "/api/v1/admin/stats/user-growth", params={"granularity": "week"}
+    )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

@@ -25,3 +25,17 @@ class AdminUserPagination(BaseModel):
 class AdminUserListResponse(BaseModel):
     users: list[AdminUserResponse]
     pagination: AdminUserPagination
+
+
+class UserGrowthPoint(BaseModel):
+    """Number of users that registered within a single period."""
+
+    period: str  # "YYYY-MM" for month granularity, "YYYY" for year granularity
+    count: int
+
+
+class UserGrowthResponse(BaseModel):
+    """New-user counts bucketed by period for the growth chart."""
+
+    granularity: str  # "month" | "year"
+    series: list[UserGrowthPoint]
