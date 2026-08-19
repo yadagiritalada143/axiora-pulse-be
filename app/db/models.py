@@ -478,3 +478,140 @@ class ValidationResultRecord(Base):
     risks: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     assumptions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     recommendations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Billing — Razorpay Subscriptions
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Plan(Base):
+    """
+    Local subscription plan catalog. One row per sellable tier (e.g. pro, enterprise).
+
+    A single local plan maps to up to two Razorpay Plan objects — one for the
+    monthly billing cycle and one for the yearly cycle — because Razorpay encodes
+    the interval and amount inside each Plan. `razorpay_plan_id_*` stay nullable
+    until the matching plan is created in the Razorpay dashboard.
+
+    Prices are stored in major currency units (whole rupees) to match the
+    frontend `PricingPlan` contract (priceMonthly / priceYearly).
+    """
+
+    __tablename__ = "plans"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_plans_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # free | pro | enterprise
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    razorpay_plan_id_monthly: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    razorpay_plan_id_yearly: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    price_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    price_yearly: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    features: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # gating rank: free=0, pro=1, ...
+    popular: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")  # highlight in UI
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Plan id={self.id} code={self.code!r} tier={self.tier}>"
+
+
+class Subscription(Base):
+    """
+    A user's subscription to a Razorpay plan.
+
+    Status mirrors Razorpay's subscription lifecycle and is updated authoritatively
+    by the webhook handler — never trust the browser callback as source of truth.
+    Statuses: created | authenticated | active | pending | halted | cancelled |
+              completed | expired
+    """
+
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("razorpay_subscription_id", name="uq_subscriptions_rzp_sub_id"),
+        Index("ix_subscriptions_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("plans.id", ondelete="SET NULL"), nullable=True
+    )
+    razorpay_subscription_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    razorpay_plan_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    billing_period: Mapped[str] = mapped_column(String(10), nullable=False, default="monthly")  # monthly | yearly
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="created", index=True)
+    short_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Subscription id={self.id} user_id={self.user_id} status={self.status!r}>"
+
+
+class Payment(Base):
+    """
+    Audit record of an individual Razorpay payment/charge against a subscription.
+    Written from the `subscription.charged` / `payment.*` webhooks for reconciliation.
+    Amounts are stored in the smallest currency unit (paise), as Razorpay reports them.
+    """
+
+    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("razorpay_payment_id", name="uq_payments_rzp_payment_id"),
+        Index("ix_payments_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    subscription_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True
+    )
+    razorpay_payment_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    razorpay_invoice_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # paise
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<Payment id={self.id} rzp={self.razorpay_payment_id!r} status={self.status!r}>"
+
+
+class WebhookEvent(Base):
+    """
+    Idempotency ledger for incoming Razorpay webhooks.
+
+    Every webhook carries an `X-Razorpay-Event-Id` header. We insert that id here
+    before processing; a duplicate delivery collides on the unique constraint and
+    is skipped, so retried webhooks never double-apply.
+    """
+
+    __tablename__ = "webhook_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_webhook_events_event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    event_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<WebhookEvent id={self.id} type={self.event_type!r} processed={self.processed}>"

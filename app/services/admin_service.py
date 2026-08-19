@@ -1,6 +1,7 @@
 """Read-only administrator operations."""
 
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,8 @@ from app.models.admin_models import (
     AdminUserListResponse,
     AdminUserPagination,
     AdminUserResponse,
+    UserGrowthPoint,
+    UserGrowthResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +66,72 @@ class AdminService:
             users=users,
             pagination=AdminUserPagination(total=total, limit=limit, offset=offset),
         )
+
+    async def get_user_growth(
+        self,
+        db: AsyncSession,
+        granularity: str,
+    ) -> UserGrowthResponse:
+        """Return new-user counts bucketed by ``granularity`` ("month" or "year").
+
+        The period label is produced in SQL (dialect-aware, so the same code runs
+        on Postgres in production and SQLite under test), then the sparse series is
+        zero-filled in Python so the chart's axis is continuous from the first
+        signup through the current period.
+        """
+        period = self._period_expression(db, granularity)
+        statement = (
+            select(period.label("period"), func.count(User.id).label("count"))
+            .group_by(period)
+            .order_by(period)
+        )
+        rows = (await db.execute(statement)).all()
+        counts = {row.period: row.count for row in rows}
+        logger.info(
+            "Admin user growth fetched: %s populated %s-bucket(s)",
+            len(counts), granularity,
+        )
+
+        series = [
+            UserGrowthPoint(period=label, count=counts.get(label, 0))
+            for label in self._period_range(granularity, earliest=min(counts) if counts else None)
+        ]
+        return UserGrowthResponse(granularity=granularity, series=series)
+
+    @staticmethod
+    def _period_expression(db: AsyncSession, granularity: str):
+        """Build a SQL expression that formats ``created_at`` into a period label."""
+        dialect = db.bind.dialect.name
+        if dialect == "sqlite":
+            fmt = "%Y-%m" if granularity == "month" else "%Y"
+            return func.strftime(fmt, User.created_at)
+        # Postgres (and any other backend that supports to_char).
+        fmt = "YYYY-MM" if granularity == "month" else "YYYY"
+        return func.to_char(User.created_at, fmt)
+
+    @staticmethod
+    def _period_range(granularity: str, earliest: str | None) -> list[str]:
+        """Yield every period label from ``earliest`` through the current period.
+
+        Returns an empty list when there are no users yet.
+        """
+        if earliest is None:
+            return []
+        now = datetime.now(timezone.utc)
+        if granularity == "year":
+            start_year = int(earliest)
+            return [str(year) for year in range(start_year, now.year + 1)]
+
+        start_year, start_month = (int(part) for part in earliest.split("-"))
+        labels: list[str] = []
+        year, month = start_year, start_month
+        while (year, month) <= (now.year, now.month):
+            labels.append(f"{year:04d}-{month:02d}")
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        return labels
 
 
 admin_service = AdminService()

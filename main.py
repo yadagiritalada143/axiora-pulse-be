@@ -93,6 +93,17 @@ async def lifespan(app: FastAPI):
     # Validate that the configured LLM provider credentials exist
     _validate_provider_config()
 
+    # Surface the subscription/payment gate state loudly — a shared environment
+    # (QA/prod) running with enforcement OFF would let everyone bypass payment.
+    from app.services.billing_service import SUBSCRIPTION_ENFORCED
+    if SUBSCRIPTION_ENFORCED:
+        logger.info("Subscription enforcement: ENABLED")
+    else:
+        logger.warning(
+            "⚠  SUBSCRIPTION ENFORCEMENT DISABLED — all users are treated as paid. "
+            "For LOCAL DEV only; never run QA/production with SUBSCRIPTION_ENFORCED=false."
+        )
+
     logger.info("Server is ready.")
     if DEBUG:
         logger.info(f"  Docs  →  http://localhost:8000/docs")
@@ -229,6 +240,7 @@ from app.api.v1 import orchestration as orchestration_router
 from app.api.v1 import workspace as workspace_router
 from app.api.v1 import surveys as surveys_router
 from app.api import profile as profile_router
+from app.api import billing as billing_router
 
 app.include_router(auth_router.router, prefix="/api/v1")
 app.include_router(admin_router.router, prefix="/api/v1")
@@ -240,6 +252,7 @@ app.include_router(surveys_router.router, prefix="/api/v1")
 # These paths intentionally remain unversioned to match the existing SPA contract.
 app.include_router(profile_router.auth_router, prefix="/api")
 app.include_router(profile_router.users_router, prefix="/api")
+app.include_router(billing_router.router, prefix="/api")
 
 
 # ── Root endpoints ─────────────────────────────────────────────────────────────
