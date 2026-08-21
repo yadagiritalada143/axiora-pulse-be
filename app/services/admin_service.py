@@ -6,8 +6,11 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, Workspace
+from app.db.models import Survey, User, Workspace
 from app.models.admin_models import (
+    AdminSurveyListResponse,
+    AdminSurveyPagination,
+    AdminSurveyResponse,
     AdminUserListResponse,
     AdminUserPagination,
     AdminUserResponse,
@@ -65,6 +68,63 @@ class AdminService:
         return AdminUserListResponse(
             users=users,
             pagination=AdminUserPagination(total=total, limit=limit, offset=offset),
+        )
+
+    async def list_surveys(
+        self,
+        db: AsyncSession,
+        limit: int,
+        offset: int,
+        search: str | None,
+        user_id: int | None = None,
+    ) -> AdminSurveyListResponse:
+        """Return a paginated directory of surveys, with owner username.
+
+        Covers all users by default; pass ``user_id`` to scope to one user's surveys.
+        """
+        filters = []
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(User.username.ilike(term))
+        if user_id is not None:
+            filters.append(Survey.user_id == user_id)
+
+        total_statement = select(func.count(Survey.id)).join(User, User.id == Survey.user_id)
+        surveys_statement = (
+            select(Survey, User.username, Workspace.name)
+            .join(User, User.id == Survey.user_id)
+            .join(Workspace, Workspace.id == Survey.workspace_id)
+            .order_by(Survey.created_at.desc(), Survey.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        if filters:
+            total_statement = total_statement.where(*filters)
+            surveys_statement = surveys_statement.where(*filters)
+
+        total = (await db.execute(total_statement)).scalar_one()
+        rows = (await db.execute(surveys_statement)).all()
+        logger.info(
+            "Admin survey list fetched: %s of %s surveys (limit=%s, offset=%s, search=%s)",
+            len(rows), total, limit, offset, bool(search),
+        )
+        surveys = [
+            AdminSurveyResponse(
+                id=survey.id,
+                user_id=survey.user_id,
+                owner_username=username,
+                workspace_id=survey.workspace_id,
+                workspace_name=workspace_name,
+                survey_link=survey.survey_link,
+                question_count=len(survey.questions or []),
+                created_at=survey.created_at,
+                updated_at=survey.updated_at,
+            )
+            for survey, username, workspace_name in rows
+        ]
+        return AdminSurveyListResponse(
+            surveys=surveys,
+            pagination=AdminSurveyPagination(total=total, limit=limit, offset=offset),
         )
 
     async def get_user_growth(

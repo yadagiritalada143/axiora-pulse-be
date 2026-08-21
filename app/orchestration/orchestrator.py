@@ -15,6 +15,7 @@ Responsibilities:
 import logging
 import uuid
 from datetime import datetime
+from typing import Any
 
 from app.llm.llm_gateway import get_llm_gateway
 from app.models.orchestration_models import (
@@ -29,6 +30,9 @@ from app.orchestration.planner import planner
 from app.orchestration.result_aggregator import result_aggregator
 from app.orchestration.validation_engine import validation_engine
 from app.services.research_trace_service import research_trace_service
+from app.services.token_tracking_service import token_tracking_service
+from app.db.database import AsyncSessionLocal
+from app.db.models import Workspace
 
 # ── Agent Registry ─────────────────────────────────────────────────────────────
 from app.agents.idea_validation_agent import IdeaValidationAgent
@@ -112,6 +116,15 @@ class Orchestrator:
                     f"score={output.score}"
                 )
 
+                # Record token usage for this agent execution
+                await self._record_agent_token_usage(
+                    request=request,
+                    agent_name=agent_name,
+                    output=output,
+                    llm_gateway=llm_gateway,
+                    run_id=run_id,
+                )
+
             if not agent_outputs:
                 research_trace_service.end_run_trace(run_id)
                 return self._failed_response(
@@ -188,6 +201,55 @@ class Orchestrator:
             )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+
+    async def _record_agent_token_usage(
+        self,
+        request: OrchestrationRequest,
+        agent_name: str,
+        output: Any,
+        llm_gateway: Any,
+        run_id: str,
+    ) -> None:
+        """Asynchronously persist token usage for an agent execution."""
+        try:
+            prompt_tokens = getattr(output, "tokens_input", 0) or 0
+            completion_tokens = getattr(output, "tokens_output", 0) or 0
+            if prompt_tokens <= 0 and completion_tokens <= 0:
+                return
+
+            ws_id_int = int(request.workspace_id) if str(request.workspace_id).isdigit() else None
+            user_id = request.user_id
+
+            async with AsyncSessionLocal() as db:
+                # If user_id is not directly on request, attempt to resolve from workspace
+                if user_id is None and ws_id_int is not None:
+                    res = await db.get(Workspace, ws_id_int)
+                    if res:
+                        user_id = res.user_id
+
+                if user_id is not None:
+                    model = getattr(output, "model_used", None) or llm_gateway.get_default_model()
+                    provider = llm_gateway.get_provider_name()
+                    await token_tracking_service.record_usage(
+                        db=db,
+                        user_id=user_id,
+                        workspace_id=ws_id_int,
+                        source="agent_execution",
+                        agent_name=agent_name,
+                        provider=provider,
+                        model=model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        metadata={
+                            "run_id": run_id,
+                            "workflow_type": str(request.workflow_type),
+                            "agent_status": str(output.status),
+                            "score": getattr(output, "score", None),
+                        },
+                    )
+                    await db.commit()
+        except Exception as err:
+            logger.warning(f"[Orchestrator] Failed to record token usage for agent '{agent_name}': {err}")
 
     @staticmethod
     def _failed_response(

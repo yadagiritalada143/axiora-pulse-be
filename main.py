@@ -239,6 +239,7 @@ from app.api.v1 import questionnaire as questionnaire_router
 from app.api.v1 import orchestration as orchestration_router
 from app.api.v1 import workspace as workspace_router
 from app.api.v1 import surveys as surveys_router
+from app.api.v1 import analytics as analytics_router
 from app.api import profile as profile_router
 from app.api import billing as billing_router
 
@@ -249,6 +250,7 @@ app.include_router(questionnaire_router.router, prefix="/api/v1")
 app.include_router(orchestration_router.router, prefix="/api/v1")
 app.include_router(workspace_router.router, prefix="/api/v1")
 app.include_router(surveys_router.router, prefix="/api/v1")
+app.include_router(analytics_router.router, prefix="/api/v1")
 # These paths intentionally remain unversioned to match the existing SPA contract.
 app.include_router(profile_router.auth_router, prefix="/api")
 app.include_router(profile_router.users_router, prefix="/api")

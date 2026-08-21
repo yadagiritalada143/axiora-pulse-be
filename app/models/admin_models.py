@@ -27,6 +27,31 @@ class AdminUserListResponse(BaseModel):
     pagination: AdminUserPagination
 
 
+class AdminSurveyResponse(BaseModel):
+    """Survey details displayed in the administrator directory, with owner info."""
+
+    id: int
+    user_id: int
+    owner_username: str
+    workspace_id: int
+    workspace_name: str
+    survey_link: str | None = None
+    question_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminSurveyPagination(BaseModel):
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminSurveyListResponse(BaseModel):
+    surveys: list[AdminSurveyResponse]
+    pagination: AdminSurveyPagination
+
+
 class UserGrowthPoint(BaseModel):
     """Number of users that registered within a single period."""
 

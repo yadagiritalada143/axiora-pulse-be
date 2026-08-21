@@ -34,6 +34,10 @@ class IdeaInput(BaseModel):
 class OrchestrationRequest(BaseModel):
     """Top-level request to start an orchestration run."""
 
+    user_id: Optional[int] = Field(
+        default=None,
+        description="ID of the user initiating the orchestration run",
+    )
     workspace_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
         description="Founder workspace ID",
