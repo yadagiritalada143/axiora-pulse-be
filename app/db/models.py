@@ -1,11 +1,13 @@
 """SQLAlchemy ORM models for users, workspace, agents, and orchestration system."""
-from datetime import datetime
+from datetime import date, datetime
 import uuid
 
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, JSON
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, JSON
 
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from app.core.timezone import now_ist
 
 
 class Base(DeclarativeBase):
@@ -66,6 +68,39 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} username={self.username!r} role={self.role!r}>"
+
+
+class UserDetails(Base):
+    __tablename__ = "user_details"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True, index=True
+    )
+    profile_id: Mapped[str] = mapped_column(
+        String(20), unique=True, nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
+    )
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    mobile_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    profile_status: Mapped[str] = mapped_column(String(20), nullable=False, default="Active")
+    nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    communication_preferences: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    last_login_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=now_ist
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=now_ist, onupdate=now_ist
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserDetails id={self.id} profile_id={self.profile_id!r} user_id={self.user_id}>"
 
 
 class RefreshSession(Base):
@@ -615,3 +650,86 @@ class WebhookEvent(Base):
 
     def __repr__(self) -> str:
         return f"<WebhookEvent id={self.id} type={self.event_type!r} processed={self.processed}>"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Token Tracking — Per-User & Per-Workspace Token Metrics
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TokenUsage(Base):
+    """
+    Audit and analytics ledger for all LLM token consumption.
+    Tracks input/output tokens, cost, provider, model, user, and workspace context.
+    """
+
+    __tablename__ = "token_usages"
+    __table_args__ = (
+        Index("ix_token_usages_user_created", "user_id", "created_at"),
+        Index("ix_token_usages_workspace_created", "workspace_id", "created_at"),
+        Index("ix_token_usages_user_workspace", "user_id", "workspace_id"),
+        Index("ix_token_usages_source", "source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workspace_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # mentor_chat | idea_extraction | agent_execution | survey_generation | survey_analysis
+    agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="openai")
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    estimated_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<TokenUsage id={self.id} user_id={self.user_id} workspace_id={self.workspace_id} "
+            f"model={self.model!r} total_tokens={self.total_tokens} cost={self.estimated_cost}>"
+        )
+
+
+class UserTokenTotal(Base):
+    """
+    Cumulative total token consumption per user (exactly 1 row per user).
+    Maintains real-time aggregated input, output, total tokens, total cost, and total calls.
+    """
+
+    __tablename__ = "user_token_totals"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_token_totals_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserTokenTotal user_id={self.user_id} prompt={self.prompt_tokens} "
+            f"completion={self.completion_tokens} total={self.total_tokens} cost={self.total_cost}>"
+        )
+
+

@@ -306,6 +306,8 @@ class WorkspaceService:
             state=ws_state,
             user_message=payload.message,
             attachments=payload.attachments,
+            user_id=current_user.id,
+            db=db,
         )
 
 

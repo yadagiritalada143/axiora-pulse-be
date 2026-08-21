@@ -9,6 +9,7 @@ from app.llm.llm_gateway import get_llm_gateway, LLMRequest
 from app.models.orchestration_models import OrchestrationRequest, IdeaInput, WorkflowType
 from app.orchestration.orchestrator import orchestrator
 from app.skills.skill_registry import skill_registry
+from app.services.token_tracking_service import token_tracking_service
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +162,12 @@ class MentorService:
         state: WorkspaceMentorState,
         user_message: str,
         attachments: Optional[List[AttachmentInput]] = None,
+        user_id: Optional[int] = None,
+        db: Optional[Any] = None,
     ) -> WorkspaceMentorState:
         logger.info(
-            "[MentorService] Processing message for workspace '%s' (state=%s, message_len=%s)",
-            state.workspace_id, state.state, len(user_message or ""),
+            "[MentorService] Processing message for workspace '%s' user_id='%s' (state=%s, message_len=%s)",
+            state.workspace_id, user_id, state.state, len(user_message or ""),
         )
         # Process incoming attachments (PDFs via pdfplumber, Docs, Links, Images)
         processed_attachments, attachment_text_context, image_data_uris = (
@@ -204,6 +207,7 @@ class MentorService:
                 )
 
                 request = OrchestrationRequest(
+                    user_id=user_id,
                     workspace_id=state.workspace_id,
                     idea_id=f"idea-{uuid.uuid4().hex[:8]}",
                     workflow_type=WorkflowType.IDEA_VALIDATION,
@@ -233,13 +237,18 @@ class MentorService:
 
         # If we are gathering info, run the Information Extractor first
         if state.state == "GATHERING_INFO":
-            await self._run_extraction(state)
+            await self._run_extraction(state, user_id=user_id, db=db)
 
         # Generate conversational response
-        await self._generate_mentor_reply(state, image_data_uris=image_data_uris)
+        await self._generate_mentor_reply(state, image_data_uris=image_data_uris, user_id=user_id, db=db)
         return state
 
-    async def _run_extraction(self, state: WorkspaceMentorState) -> None:
+    async def _run_extraction(
+        self,
+        state: WorkspaceMentorState,
+        user_id: Optional[int] = None,
+        db: Optional[Any] = None,
+    ) -> None:
         """Helper to scan conversation history and extract idea details."""
         history_str = ""
         for msg in state.conversation_history[-6:]:  # focus on recent history for context
@@ -255,6 +264,23 @@ class MentorService:
                 temperature=0.1
             )
             res = await self.llm.complete(req)
+
+            # Record token usage if db and user_id available
+            if db and user_id and (res.tokens_input > 0 or res.tokens_output > 0 or res.total_tokens > 0):
+                ws_id_int = int(state.workspace_id) if str(state.workspace_id).isdigit() else None
+                await token_tracking_service.record_usage(
+                    db=db,
+                    user_id=user_id,
+                    workspace_id=ws_id_int,
+                    source="idea_extraction",
+                    agent_name="idea_extractor",
+                    provider=res.provider or "openai",
+                    model=res.model or "gpt-5.4-mini",
+                    prompt_tokens=res.tokens_input,
+                    completion_tokens=res.tokens_output,
+                    metadata={"workspace_state": state.state},
+                )
+
             if res.success and res.content:
                 # Parse JSON
                 cleaned_content = self._clean_json_str(res.content)
@@ -285,6 +311,8 @@ class MentorService:
         self,
         state: WorkspaceMentorState,
         image_data_uris: Optional[List[str]] = None,
+        user_id: Optional[int] = None,
+        db: Optional[Any] = None,
     ) -> None:
         """Call LLM with current workspace state to write assistant response."""
         # Find missing required fields
@@ -321,6 +349,22 @@ class MentorService:
                 images=image_data_uris,
             )
             res = await self.llm.complete(req)
+
+            # Record token usage if db and user_id available
+            if db and user_id and (res.tokens_input > 0 or res.tokens_output > 0 or res.total_tokens > 0):
+                ws_id_int = int(state.workspace_id) if str(state.workspace_id).isdigit() else None
+                await token_tracking_service.record_usage(
+                    db=db,
+                    user_id=user_id,
+                    workspace_id=ws_id_int,
+                    source="mentor_chat",
+                    agent_name="ai_mentor",
+                    provider=res.provider or "openai",
+                    model=res.model or "gpt-5.4-mini",
+                    prompt_tokens=res.tokens_input,
+                    completion_tokens=res.tokens_output,
+                    metadata={"workspace_state": state.state},
+                )
 
             if res.success and res.content:
                 reply = res.content.strip()

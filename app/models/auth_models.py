@@ -9,7 +9,7 @@ Endpoints covered:
   POST /resendOTP   → ResendOTPRequest     → RegisterResponse
   POST /login       → UserLoginRequest     → LoginSuccessResponse
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, EmailStr, Field, field_validator, model_validator
@@ -326,6 +326,18 @@ class CurrentUserResponse(BaseModel):
     role: str
     createdAt: datetime
     updatedAt: datetime
+    # Extended profile fields from user_details — None when the user hasn't
+    # created a profile yet (see POST /api/v1/user-details).
+    profileId: Optional[str] = None
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    mobileNumber: Optional[str] = None
+    dateOfBirth: Optional[date] = None
+    gender: Optional[str] = None
+    profileStatus: Optional[str] = None
+    nationality: Optional[str] = None
+    communicationPreferences: Optional[List[str]] = None
+    lastLoginDate: Optional[datetime] = None
 
 
 class UpdateCurrentUserRequest(BaseModel):

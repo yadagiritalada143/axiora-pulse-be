@@ -629,6 +629,9 @@ class AuthService:
         # Generate tokens
         access_token, refresh_token = await _issue_token_pair(user, db)
 
+        from app.services.user_details_service import user_details_service
+        await user_details_service.touch_last_login(user.id, db)
+
         logger.info("Login OTP successfully verified for user id=%s. Access and Refresh tokens issued.", user.id)
 
         auth_actions_row = await _get_or_create_auth_actions(user.id, db)
@@ -675,6 +678,9 @@ class AuthService:
             )
 
         access_token, refresh_token = await _issue_token_pair(user, db)
+
+        from app.services.user_details_service import user_details_service
+        await user_details_service.touch_last_login(user.id, db)
 
         logger.info("Admin user logged in successfully: %s (id=%s)", user.username, user.id)
 
