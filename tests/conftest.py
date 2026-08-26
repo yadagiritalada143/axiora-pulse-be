@@ -31,28 +31,39 @@ limiter.enabled = False
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 _UPLOADS_WORKSPACES_DIR = Path("uploads/workspaces")
+_UPLOADS_AVATARS_DIR = Path("uploads/avatars")
 
 
 @pytest.fixture(autouse=True)
 def _cleanup_local_upload_files():
     """Remove any files s3_storage_service falls back to writing under
-    uploads/workspaces/ during a test (no AWS credentials configured in
-    the test environment). Prevents test runs from leaving disk artifacts
-    behind on every pytest invocation. Tracks individual files (not just
-    top-level workspace directories) so new files written inside an
-    already-existing workspace folder are still caught."""
-    before = set(_UPLOADS_WORKSPACES_DIR.rglob("*")) if _UPLOADS_WORKSPACES_DIR.exists() else set()
+    uploads/workspaces/ and uploads/avatars/ during a test (no AWS credentials
+    configured in the test environment). Prevents test runs from leaving disk
+    artifacts behind on every pytest invocation. Tracks individual files so
+    new files written inside an already-existing folder are still caught."""
+    before_w = set(_UPLOADS_WORKSPACES_DIR.rglob("*")) if _UPLOADS_WORKSPACES_DIR.exists() else set()
+    before_a = set(_UPLOADS_AVATARS_DIR.rglob("*")) if _UPLOADS_AVATARS_DIR.exists() else set()
     yield
-    if not _UPLOADS_WORKSPACES_DIR.exists():
-        return
-    after = set(_UPLOADS_WORKSPACES_DIR.rglob("*"))
-    for entry in sorted(after - before, key=lambda p: len(p.parts), reverse=True):
-        if not entry.exists():
-            continue
-        if entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+    # Clean workspaces
+    if _UPLOADS_WORKSPACES_DIR.exists():
+        after_w = set(_UPLOADS_WORKSPACES_DIR.rglob("*"))
+        for entry in sorted(after_w - before_w, key=lambda p: len(p.parts), reverse=True):
+            if not entry.exists():
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+    # Clean avatars
+    if _UPLOADS_AVATARS_DIR.exists():
+        after_a = set(_UPLOADS_AVATARS_DIR.rglob("*"))
+        for entry in sorted(after_a - before_a, key=lambda p: len(p.parts), reverse=True):
+            if not entry.exists():
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
 
 @pytest.fixture(autouse=True)
 def _reset_dependency_overrides():

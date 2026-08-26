@@ -88,7 +88,7 @@ State-Specific Instructions:
    - Produce a practical 7-day action plan when appropriate.
 
 Remember: Follow your complete knowledge base above for behaviour, response format,
-questioning style, devil's advocate protocol, and all guardrails.
+questioning style, objective review protocol, and all guardrails.
 """
 
 
@@ -172,7 +172,10 @@ class MentorService:
         # Process incoming attachments (PDFs via pdfplumber, Docs, Links, Images)
         processed_attachments, attachment_text_context, image_data_uris = (
             await attachment_processor.process_attachments(
-                attachments or [], workspace_id=state.workspace_id
+                attachments=attachments or [],
+                workspace_id=state.workspace_id,
+                user_id=user_id,
+                db=db,
             )
         )
 

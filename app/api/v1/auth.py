@@ -16,6 +16,8 @@ from app.db.database import get_db
 from app.db.models import User
 from app.models.auth_models import (
     AdminLoginResponse,
+    GoogleAuthRequest,
+    GoogleAuthResponse,
     LoginSuccessResponse,
     RegisterResponse,
     ResendOTPRequest,
@@ -136,13 +138,13 @@ async def resend_otp(
 
 @router.post(
     "/login",
-    response_model=LoginOTPResponse,
+    response_model=LoginSuccessResponse,
     status_code=status.HTTP_200_OK,
-    summary="Login and request a verification code",
+    summary="Login and obtain access/refresh tokens",
     description=(
         "Authenticates a user with username (email) and password. "
-        "Requires that OTP MFA has been completed (registerMFA=True). "
-        "Generates and dispatches a login-specific OTP to complete authentication."
+        "Requires that registration OTP verification has been completed (registerMFA=True). "
+        "Returns signed JWT access and refresh token pair in the response body."
     ),
 )
 @limiter.limit("5/minute")
@@ -150,8 +152,9 @@ async def login(
     request: Request,
     payload: UserLoginRequest,
     db: AsyncSession = Depends(get_db),
-) -> LoginOTPResponse:
+) -> LoginSuccessResponse:
     return await auth_service.login(payload, db)
+
 
 
 # ── Verify Login ───────────────────────────────────────────────────────────────
@@ -173,6 +176,30 @@ async def verify_login(
     db: AsyncSession = Depends(get_db),
 ) -> VerifyLoginResponse:
     return await auth_service.verify_login(payload, db)
+
+
+# ── Google Sign-In ──────────────────────────────────────────────────────────
+
+@router.post(
+    "/google",
+    response_model=GoogleAuthResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sign in or register with Google",
+    description=(
+        "Accepts a Google Identity Services ID token ('credential'). "
+        "Verifies it against Google's public keys, then logs the user in — "
+        "linking to an existing account by email or provisioning a new one. "
+        "No OTP is required since Google has already verified the email. "
+        "Returns a signed access/refresh token pair plus 'is_new_user'."
+    ),
+)
+@limiter.limit("10/minute")
+async def google_sign_in(
+    request: Request,
+    payload: GoogleAuthRequest,
+    db: AsyncSession = Depends(get_db),
+) -> GoogleAuthResponse:
+    return await auth_service.google_sign_in(payload, db)
 
 
 # ── Admin Login ───────────────────────────────────────────────────────────────

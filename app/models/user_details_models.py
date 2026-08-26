@@ -46,6 +46,7 @@ class CreateUserDetailsRequest(BaseModel):
     gender: Optional[str] = Field(None, max_length=20)
     nationality: Optional[str] = Field(None, max_length=100)
     communication_preferences: List[Literal["Email", "SMS", "Push"]] = Field(default_factory=list)
+    avatar_url: Optional[str] = None
 
     @field_validator("mobile_number")
     @classmethod
@@ -75,6 +76,7 @@ class UpdateUserDetailsRequest(BaseModel):
     gender: Optional[str] = Field(None, max_length=20)
     nationality: Optional[str] = Field(None, max_length=100)
     communication_preferences: Optional[List[Literal["Email", "SMS", "Push"]]] = None
+    avatar_url: Optional[str] = None
 
     @field_validator("mobile_number")
     @classmethod
@@ -115,6 +117,7 @@ class UserDetailsResponse(BaseModel):
     nationality: Optional[str] = None
     communication_preferences: List[str] = Field(default_factory=list)
     last_login_date: Optional[datetime] = None
+    avatar_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

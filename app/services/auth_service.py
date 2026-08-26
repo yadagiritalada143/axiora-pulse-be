@@ -42,10 +42,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _ACCESS_TOKEN_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
-from app.db.models import AuthActions, RefreshSession, User
+from app.core.google_auth import GoogleTokenError, verify_google_id_token
+from app.db.models import AuthActions, RefreshSession, User, UserDetails
 from app.models.auth_models import (
     AdminLoginResponse,
     AuthActionsData,
+    GoogleAuthRequest,
+    GoogleAuthResponse,
     RegisterAuthActionsData,
     LoginSuccessResponse,
     RegisterResponse,
@@ -526,8 +529,8 @@ class AuthService:
 
     async def login(
         self, request: UserLoginRequest, db: AsyncSession
-    ) -> LoginOTPResponse:
-        """Authenticate a user and dispatch a login-specific OTP.
+    ) -> LoginSuccessResponse:
+        """Authenticate a user and issue access/refresh tokens directly.
 
         Raises:
             HTTPException 401 if credentials are invalid.
@@ -551,24 +554,30 @@ class AuthService:
                 detail="Account not verified. Please complete OTP verification.",
             )
 
-        otp = generate_otp()
-        expiry = otp_expiry()
+        access_token, refresh_token = await _issue_token_pair(user, db)
 
-        user.login_otp = otp
-        user.login_otp_expiry = expiry
+        from app.services.user_details_service import user_details_service
+        await user_details_service.touch_last_login(user.id, db)
 
-        logger.info("Login OTP generated for user id=%s (%s)", user.id, user.username)
+        logger.info("Login successful for user id=%s (%s). Tokens issued.", user.id, user.username)
 
-        # Dispatch OTP
-        result = await dispatch_login_otp(username, otp)
-        if not result.success:
-            logger.error("Login OTP dispatch failed for user id=%s: %s", user.id, result.error)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=result.error or "Failed to deliver login verification code.",
-            )
+        auth_actions_row = await _get_or_create_auth_actions(user.id, db)
+        actions = ["dashboard"] if user.role == "admin" else []
+        return LoginSuccessResponse(
+            status="success",
+            message="Login successful.",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in_minutes=_ACCESS_TOKEN_MINS,
+            role=user.role,
+            actions=actions,
+            auth_actions=AuthActionsData(
+                payment=auth_actions_row.payment,
+                interactive_questions=auth_actions_row.interactive_questions,
+            ),
+        )
 
-        return LoginOTPResponse(userid=user.id)
 
     # ── Verify Login ───────────────────────────────────────────────────────────
 
@@ -647,6 +656,124 @@ class AuthService:
                 interactive_questions=auth_actions_row.interactive_questions,
             ),
         )
+
+    # ── Google Sign-In ───────────────────────────────────────────────────────
+
+    async def google_sign_in(
+        self, request: GoogleAuthRequest, db: AsyncSession
+    ) -> GoogleAuthResponse:
+        """Authenticate a user from a Google Identity Services ID token.
+
+        Verifies the token against Google's keys, then resolves the account:
+          1. by Google subject id (returning users),
+          2. else by verified email → links Google to an existing local account,
+          3. else creates a fresh Google-backed account (MFA pre-completed).
+
+        Google has already verified the email, so no OTP step is required.
+
+        Raises:
+            HTTPException 401 if the Google credential is missing or invalid.
+        """
+        try:
+            claims = await verify_google_id_token(request.credential)
+        except GoogleTokenError as exc:
+            logger.warning("Rejected Google sign-in: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        google_sub = str(claims["sub"])
+        email = str(claims["email"]).lower().strip()
+        is_new_user = False
+
+        # 1. Returning Google user — look up by the stable subject id.
+        result = await db.execute(select(User).where(User.google_sub == google_sub))
+        user = result.scalar_one_or_none()
+
+        # 2. First Google sign-in for an email that already has a local account:
+        #    link the two (Google has verified the email, so this is safe).
+        if user is None:
+            user = await _get_user_by_username(db, email)
+            if user is not None:
+                user.google_sub = google_sub
+                if not user.register_mfa:
+                    # Google verified the email — treat the account as active.
+                    user.register_mfa = True
+                logger.info("Linked Google identity to existing account id=%s (%s).", user.id, email)
+
+        # 3. Brand-new user — provision a Google-backed account.
+        if user is None:
+            display_name = (claims.get("name") or "").strip() or None
+            user = User(
+                role="user",
+                username=email,
+                display_name=display_name,
+                password=None,
+                auth_provider="google",
+                google_sub=google_sub,
+                register_mfa=True,
+            )
+            db.add(user)
+            await db.flush()
+            await db.refresh(user)
+            await self._create_google_user_details(user, claims, db)
+            is_new_user = True
+            logger.info("Provisioned new Google account id=%s (%s).", user.id, email)
+
+        access_token, refresh_token = await _issue_token_pair(user, db)
+
+        from app.services.user_details_service import user_details_service
+        await user_details_service.touch_last_login(user.id, db)
+
+        auth_actions_row = await _get_or_create_auth_actions(user.id, db)
+        logger.info("Google sign-in successful for user id=%s. Tokens issued.", user.id)
+
+        return GoogleAuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in_minutes=_ACCESS_TOKEN_MINS,
+            role=user.role,
+            actions=[],
+            auth_actions=AuthActionsData(
+                payment=auth_actions_row.payment,
+                interactive_questions=auth_actions_row.interactive_questions,
+            ),
+            is_new_user=is_new_user,
+        )
+
+    @staticmethod
+    async def _create_google_user_details(user: User, claims: dict, db: AsyncSession) -> None:
+        """Seed a user_details profile from Google claims (mobile number left blank)."""
+        from app.services.user_details_service import _generate_unique_profile_id
+
+        email = str(claims["email"]).lower().strip()
+        first_name = (claims.get("given_name") or "").strip()
+        last_name = (claims.get("family_name") or "").strip()
+        if not first_name:
+            # Fall back to the display name, then the email local-part.
+            full_name = (claims.get("name") or "").strip()
+            if full_name:
+                parts = full_name.split(None, 1)
+                first_name = parts[0]
+                last_name = last_name or (parts[1] if len(parts) > 1 else "")
+            else:
+                first_name = email.split("@", 1)[0]
+
+        profile_id = await _generate_unique_profile_id(db)
+        db.add(
+            UserDetails(
+                profile_id=profile_id,
+                user_id=user.id,
+                first_name=first_name[:100],
+                last_name=(last_name or "")[:100],
+                email=email,
+                mobile_number=None,
+            )
+        )
+        await db.flush()
+        logger.info("Seeded user_details profile_id=%s for Google user_id=%s.", profile_id, user.id)
 
     # ── Admin Login ────────────────────────────────────────────────────────────
 

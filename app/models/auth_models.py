@@ -149,9 +149,14 @@ class LoginSuccessResponse(BaseModel):
     """Returned on successful login."""
     status: str = "success"
     message: str = "Login successful."
-    jwt: str
+    access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+    role: str = "user"
+    actions: List[str] = Field(default_factory=list)
+    auth_actions: Optional[AuthActionsData] = None    # Post-login gate flags (regular users only)
+
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -269,6 +274,17 @@ class LoginOTPResponse(BaseModel):
     userid: Optional[int] = None   # Returned so the client can use it for /resendOTP
 
 
+class GoogleAuthRequest(BaseModel):
+    """Payload for POST /api/v1/auth/google.
+
+    ``credential`` is the ID token (a signed JWT) returned by Google Identity
+    Services on the frontend. It is accepted under several common field names.
+    """
+    credential: str = Field(
+        validation_alias=AliasChoices("credential", "id_token", "idToken", "token")
+    )
+
+
 class VerifyLoginRequest(BaseModel):
     """Payload for POST /api/v1/auth/verify-login."""
     emailOrMobile: str = Field(validation_alias=AliasChoices("emailOrMobile", "email", "username", "mobile"))
@@ -286,6 +302,25 @@ class VerifyLoginResponse(BaseModel):
     role: str = "user"
     actions: List[str] = Field(default_factory=list)
     auth_actions: Optional[AuthActionsData] = None    # Post-login gate flags (regular users only)
+
+
+class GoogleAuthResponse(BaseModel):
+    """Returned on successful Google sign-in.
+
+    Mirrors VerifyLoginResponse so the frontend can treat both the same way,
+    plus ``is_new_user`` to let the client tailor the post-auth experience
+    (e.g. route a first-time user through onboarding).
+    """
+    status: str = "success"
+    message: str = "Login successful."
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in_minutes: int
+    role: str = "user"
+    actions: List[str] = Field(default_factory=list)
+    auth_actions: Optional[AuthActionsData] = None
+    is_new_user: bool = False
 
 
 class AdminLoginResponse(BaseModel):
@@ -322,7 +357,7 @@ class CurrentUserResponse(BaseModel):
     id: str
     email: str
     name: str
-    avatarUrl: None = None
+    avatarUrl: Optional[str] = None
     role: str
     createdAt: datetime
     updatedAt: datetime
@@ -343,6 +378,7 @@ class CurrentUserResponse(BaseModel):
 class UpdateCurrentUserRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
+    avatarUrl: Optional[str] = None
 
 
 class CurrentUserEnvelope(BaseModel):

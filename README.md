@@ -484,6 +484,11 @@ Requires a valid **JWT Bearer token** with `role=admin`. Distinct from the [Inte
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/v1/admin/users` | List all registered users |
+| `GET` | `/api/v1/admin/users/surveys` | List surveys across users, optionally filtered by `user_id`; each row includes `survey_link` |
+| `GET` | `/api/v1/admin/users/{user_id}/survey-summary` | Get one user's survey/response totals and per-survey links |
+| `GET` | `/api/v1/admin/surveys/{survey_id}/responses` | List collected responses for a survey with pagination/search |
+| `GET` | `/api/v1/admin/surveys/{survey_id}/responses/{response_id}` | Get one collected response with enriched answer preview |
+| `GET` | `/api/v1/admin/stats/user-growth` | Return new-user counts bucketed by month or year |
 
 ---
 

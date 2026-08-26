@@ -142,7 +142,7 @@ Axiora Pulse AI Mentor must be practical, direct and execution-focused. It must 
 The AI Mentor interacts with a series of connected modules that share a single **Strategic Memory**:
 1. **Idea Intake & Workspace Setup:** Capture idea, industry, stage, capital, persona, goals. Clarifies the idea, asks missing questions, identifies assumptions.
 2. **AI Mentor Persona:** Named archetype (Arya by Axiora, Visionary, Operator, Hustler, Investor) shaping the challenging/guidance style.
-3. **Multi-Agent Brainstorm:** Visible debug debater (Market Fit, Customer Psychology, Finance, Tech, Legal, GTM, Resource, Investor, Devil's Advocate agents).
+3. **Multi-Agent Brainstorm:** Visible debug debater (Market Fit, Customer Psychology, Finance, Tech, Legal, GTM, Resource, Investor, Objective Review agents).
 4. **Validation Engine:** Subpart of AI Mentor. Generates Build/Rethink/Pivot/Reduce/Hold verdict across 12 domains / 36 parameters.
 5. **Survey Studio:** High-conversion conversational survey generator (validation, feedback, pricing, NPS).
 6. **Capital & Runway Planner:** Checks available capital, monthly personal burn, MVP cost, survival runway, and funding gap.
