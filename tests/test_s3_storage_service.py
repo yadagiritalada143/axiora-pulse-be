@@ -45,7 +45,9 @@ def _cleanup_uploads_dir():
 
 def _local_service() -> S3StorageService:
     """A service instance with no AWS credentials — local fallback mode."""
-    return S3StorageService()
+    svc = S3StorageService()
+    svc._s3_client = None
+    return svc
 
 
 def _service_with_mock_client() -> tuple[S3StorageService, MagicMock]:

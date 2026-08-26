@@ -71,6 +71,9 @@ async def _fake_process_message(
     state: WorkspaceMentorState,
     user_message: str,
     attachments: list | None = None,
+    user_id: int | None = None,
+    db: Any | None = None,
+    **kwargs,
 ) -> WorkspaceMentorState:
     """Deterministic stand-in for mentor_service.process_message — avoids real LLM calls."""
     state.conversation_history.append({"role": "user", "content": user_message})
@@ -175,6 +178,9 @@ async def test_chat_with_mentor_auto_syncs_survey_when_validated(
         state: WorkspaceMentorState,
         user_message: str,
         attachments: list | None = None,
+        user_id: int | None = None,
+        db: Any | None = None,
+        **kwargs,
     ) -> WorkspaceMentorState:
         state.conversation_history.append({"role": "user", "content": user_message})
         state.state = "VALIDATED"

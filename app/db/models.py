@@ -35,8 +35,17 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
-    password: Mapped[str] = mapped_column(
-        String(512), nullable=False
+    # Nullable: federated (e.g. Google SSO) accounts have no local password.
+    password: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    # How the account authenticates: "local" (email + password + OTP) or "google".
+    auth_provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="local", server_default="local"
+    )
+    # Google's stable subject identifier ("sub" claim); set only for linked Google accounts.
+    google_sub: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
     )
     register_otp: Mapped[int | None] = mapped_column(
         Integer, nullable=True
@@ -85,13 +94,15 @@ class UserDetails(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
-    mobile_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Nullable: Google SSO provides no phone number; users add it later in their profile.
+    mobile_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
     profile_status: Mapped[str] = mapped_column(String(20), nullable=False, default="Active")
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
     communication_preferences: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     last_login_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=now_ist
     )

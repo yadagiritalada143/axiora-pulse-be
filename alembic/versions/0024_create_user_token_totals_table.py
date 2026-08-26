@@ -59,22 +59,30 @@ def upgrade() -> None:
         unique=True,
     )
 
-    # 1. Backfill from existing token_usages records (if any exist)
+    # 1. Backfill from existing token_usages records (if table exists)
     op.execute(
         """
-        INSERT INTO user_token_totals (user_id, prompt_tokens, completion_tokens, total_tokens, total_cost, total_calls, created_at, updated_at)
-        SELECT 
-            user_id,
-            COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-            COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens,
-            COALESCE(SUM(estimated_cost), 0.0) AS total_cost,
-            COUNT(id) AS total_calls,
-            MIN(created_at) AS created_at,
-            MAX(created_at) AS updated_at
-        FROM token_usages
-        GROUP BY user_id
-        ON CONFLICT (user_id) DO NOTHING;
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'token_usages'
+            ) THEN
+                INSERT INTO user_token_totals (user_id, prompt_tokens, completion_tokens, total_tokens, total_cost, total_calls, created_at, updated_at)
+                SELECT 
+                    user_id,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                    COALESCE(SUM(estimated_cost), 0.0) AS total_cost,
+                    COUNT(id) AS total_calls,
+                    MIN(created_at) AS created_at,
+                    MAX(created_at) AS updated_at
+                FROM token_usages
+                GROUP BY user_id
+                ON CONFLICT (user_id) DO NOTHING;
+            END IF;
+        END $$;
         """
     )
 

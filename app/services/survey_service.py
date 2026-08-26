@@ -170,8 +170,9 @@ class SurveyService:
 
         if not survey.survey_link:
             base_url = os.getenv("PUBLIC_APP_URL")
-            survey.survey_link = f"{base_url.rstrip('/')}/surveys/public/{survey.public_token}"
-            await db.flush()
+            if base_url:
+                survey.survey_link = f"{base_url.rstrip('/')}/surveys/public/{survey.public_token}"
+                await db.flush()
 
         await db.refresh(survey)
 

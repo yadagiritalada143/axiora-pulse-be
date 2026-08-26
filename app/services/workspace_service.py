@@ -43,7 +43,6 @@ from app.services.mentor_service import mentor_service, WorkspaceMentorState
 from app.services.report_service import report_service
 from app.services.s3_storage_service import s3_storage_service
 from app.services.survey_service import survey_service
-from app.services.workspace_attachment_service import workspace_attachment_service
 
 logger = logging.getLogger(__name__)
 
@@ -329,20 +328,6 @@ class WorkspaceService:
                 validation_result=workspace.validation_result,
                 db=db,
             )
-
-        # Auto-sync chat attachments (images, PDFs, docs) into workspace_attachments table
-        if payload.attachments:
-            for att in payload.attachments:
-                att_type = (att.type or "").lower().strip()
-                if att_type in ("image", "pdf", "doc") and att.url_or_data:
-                    await workspace_attachment_service.save_from_base64(
-                        workspace_id=workspace.id,
-                        user_id=current_user.id,
-                        filename=att.name or f"{att_type}_attachment",
-                        base64_data=att.url_or_data,
-                        mime_type=att.mime_type or "application/octet-stream",
-                        db=db,
-                    )
 
         assistant_reply = "I'm listening. Tell me more!"
         if updated_state.conversation_history:

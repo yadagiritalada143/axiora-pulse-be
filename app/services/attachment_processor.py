@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from pydantic import BaseModel
 
+from app.db.models import WorkspaceAttachment
 from app.models.workspace_models import AttachmentInput
 from app.services.s3_storage_service import s3_storage_service
 
@@ -27,6 +28,7 @@ class ProcessedAttachment(BaseModel):
     type: str  # image | pdf | doc | link
     name: str
     url: Optional[str] = None
+    s3_key: Optional[str] = None
     extracted_text: Optional[str] = None
     image_data_uri: Optional[str] = None
     error: Optional[str] = None
@@ -38,6 +40,8 @@ class AttachmentProcessor:
         self,
         attachments: List[AttachmentInput],
         workspace_id: str | int,
+        user_id: Optional[int | str] = None,
+        db: Optional[Any] = None,
     ) -> Tuple[List[ProcessedAttachment], str, List[str]]:
         """
         Process a list of incoming attachment inputs.
@@ -54,8 +58,8 @@ class AttachmentProcessor:
             return processed_items, "", image_data_uris
 
         logger.info(
-            "[AttachmentProcessor] Processing %s attachment(s) for workspace %s",
-            len(attachments), workspace_id,
+            "[AttachmentProcessor] Processing %s attachment(s) for workspace %s (user_id=%s)",
+            len(attachments), workspace_id, user_id,
         )
 
         for idx, item in enumerate(attachments, start=1):
@@ -65,7 +69,7 @@ class AttachmentProcessor:
 
             try:
                 if att_type == "pdf":
-                    res = self._process_pdf(raw_data, name, workspace_id)
+                    res = self._process_pdf(raw_data, name, workspace_id, user_id=user_id)
                     processed_items.append(res)
                     if res.extracted_text:
                         text_context_blocks.append(
@@ -75,7 +79,7 @@ class AttachmentProcessor:
                         )
 
                 elif att_type == "doc":
-                    res = self._process_doc(raw_data, name, workspace_id, item.mime_type)
+                    res = self._process_doc(raw_data, name, workspace_id, item.mime_type, user_id=user_id)
                     processed_items.append(res)
                     if res.extracted_text:
                         text_context_blocks.append(
@@ -95,7 +99,7 @@ class AttachmentProcessor:
                         )
 
                 elif att_type == "image":
-                    res = self._process_image(raw_data, name, workspace_id)
+                    res = self._process_image(raw_data, name, workspace_id, user_id=user_id)
                     processed_items.append(res)
                     if res.image_data_uri:
                         image_data_uris.append(res.image_data_uri)
@@ -116,6 +120,31 @@ class AttachmentProcessor:
                     )
                 )
 
+        # Sync persisted WorkspaceAttachment database records if db session and user_id are available
+        if db and user_id:
+            try:
+                for res in processed_items:
+                    if res.type in ("pdf", "doc", "image") and res.url and res.s3_key and not res.error:
+                        file_mime = "application/pdf" if res.type == "pdf" else (
+                            "image/jpeg" if res.name.lower().endswith((".jpg", ".jpeg")) else (
+                                "image/png" if res.type == "image" else "application/octet-stream"
+                            )
+                        )
+                        att_record = WorkspaceAttachment(
+                            user_id=int(user_id),
+                            workspace_id=int(workspace_id),
+                            file_name=res.name,
+                            file_type=res.type,
+                            mime_type=file_mime,
+                            s3_key=res.s3_key,
+                            file_url=res.url,
+                            file_size_bytes=None,
+                        )
+                        db.add(att_record)
+                await db.flush()
+            except Exception as db_err:
+                logger.warning("[AttachmentProcessor] Could not sync WorkspaceAttachment DB record: %s", db_err)
+
         formatted_context = "\n\n".join(text_context_blocks)
         return processed_items, formatted_context, image_data_uris
 
@@ -124,13 +153,17 @@ class AttachmentProcessor:
         raw_data: str,
         name: str,
         workspace_id: str | int,
+        user_id: Optional[int | str] = None,
     ) -> ProcessedAttachment:
-        """Extract text from PDF using pdfplumber and upload PDF to S3."""
+        """Extract text from PDF using pdfplumber and upload PDF to axiora-assets bucket."""
         file_bytes = self._decode_bytes(raw_data)
-        file_url, _ = s3_storage_service.upload_file_bytes(
+        safe_name = name if name.endswith(".pdf") else f"{name}.pdf"
+        file_url, s3_key = s3_storage_service.upload_workspace_asset(
             file_bytes=file_bytes,
-            filename=name if name.endswith(".pdf") else f"{name}.pdf",
+            filename=safe_name,
+            user_id=user_id or 1,
             workspace_id=workspace_id,
+            file_type="pdf",
             content_type="application/pdf",
         )
 
@@ -144,7 +177,7 @@ class AttachmentProcessor:
                     if page_text.strip():
                         extracted_pages.append(f"[Page {p_num}]\n{page_text.strip()}")
         except Exception as e:
-            logger.warning("[AttachmentProcessor] pdfplumber extraction failed for %s: %s. Falling back to simple reader.", name, e)
+            logger.warning("[AttachmentProcessor] pdfplumber extraction failed for %s: %s. Falling back to simple reader.", safe_name, e)
             # Simple fallback text extraction if pdfplumber fails
             extracted_pages.append("(Could not extract structured text from PDF file)")
 
@@ -157,6 +190,7 @@ class AttachmentProcessor:
             type="pdf",
             name=name,
             url=file_url,
+            s3_key=s3_key,
             extracted_text=full_text,
         )
 
@@ -166,13 +200,16 @@ class AttachmentProcessor:
         name: str,
         workspace_id: str | int,
         mime_type: Optional[str] = None,
+        user_id: Optional[int | str] = None,
     ) -> ProcessedAttachment:
-        """Extract text from .docx (using python-docx) or text/markdown files."""
+        """Extract text from .docx (using python-docx) or text/markdown files and upload to axiora-assets bucket."""
         file_bytes = self._decode_bytes(raw_data)
-        file_url, _ = s3_storage_service.upload_file_bytes(
+        file_url, s3_key = s3_storage_service.upload_workspace_asset(
             file_bytes=file_bytes,
             filename=name,
+            user_id=user_id or 1,
             workspace_id=workspace_id,
+            file_type="doc",
             content_type=mime_type or "application/octet-stream",
         )
 
@@ -202,6 +239,7 @@ class AttachmentProcessor:
             type="doc",
             name=name,
             url=file_url,
+            s3_key=s3_key,
             extracted_text=extracted_text,
         )
 
@@ -260,8 +298,9 @@ class AttachmentProcessor:
         raw_data: str,
         name: str,
         workspace_id: str | int,
+        user_id: Optional[int | str] = None,
     ) -> ProcessedAttachment:
-        """Decode base64 image (JPEG, JPG, PNG, WEBP, GIF, etc.), upload to S3/local, and prepare base64 data URI for Vision LLM."""
+        """Decode base64 image (JPEG, JPG, PNG, WEBP, GIF, etc.), upload to axiora-assets, and prepare base64 data URI for Vision LLM."""
         mime_type = "image/jpeg" if name.lower().endswith((".jpg", ".jpeg")) else "image/png"
 
         if raw_data.startswith("data:image/"):
@@ -275,11 +314,14 @@ class AttachmentProcessor:
 
         ext = ".jpg" if "jpeg" in mime_type or "jpg" in mime_type else ".png"
         safe_name = name if "." in name else f"{name}{ext}"
+        file_bytes = self._decode_bytes(raw_data)
 
-        file_url, _ = s3_storage_service.upload_base64(
-            base64_data=raw_data,
+        file_url, s3_key = s3_storage_service.upload_workspace_asset(
+            file_bytes=file_bytes,
             filename=safe_name,
+            user_id=user_id or 1,
             workspace_id=workspace_id,
+            file_type="image",
             content_type=mime_type,
         )
 
@@ -287,6 +329,7 @@ class AttachmentProcessor:
             type="image",
             name=name,
             url=file_url,
+            s3_key=s3_key,
             image_data_uri=data_uri,
         )
 

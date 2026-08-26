@@ -256,6 +256,12 @@ app.include_router(profile_router.auth_router, prefix="/api")
 app.include_router(profile_router.users_router, prefix="/api")
 app.include_router(billing_router.router, prefix="/api")
 
+# Serve local file uploads (avatars, attachments) statically for browser access
+from fastapi.staticfiles import StaticFiles
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+
 
 # ── Root endpoints ─────────────────────────────────────────────────────────────
 

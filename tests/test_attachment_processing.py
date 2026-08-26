@@ -141,3 +141,13 @@ async def test_workspace_chat_api_with_attachments(client: AsyncClient, db_sessi
     assert "reply" in data
     assert data["workspace_id"] == workspace.id
 
+    from sqlalchemy import select
+    from app.db.models import WorkspaceAttachment
+    result = await db_session.execute(
+        select(WorkspaceAttachment).where(WorkspaceAttachment.workspace_id == workspace.id)
+    )
+    records = result.scalars().all()
+    assert len(records) == 1
+    assert records[0].file_name == "pitch_deck.txt"
+    assert records[0].file_type == "doc"
+
