@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Payment, Plan, Subscription, User, WebhookEvent
+from app.db.models import Payment, Plan, Role, Subscription, User, WebhookEvent
 from app.models.billing_models import PlanOut, SubscribeOut, SubscriptionOut
 from app.services.razorpay_service import razorpay_service
 
@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 # Subscription statuses that mean the user still holds (or is completing) a live
 # subscription — used to block creating a duplicate.
 _NON_TERMINAL = {"created", "authenticated", "active", "pending", "halted"}
-# Statuses that grant paid entitlement.
-_ENTITLED = {"active", "authenticated"}
+# Statuses that grant paid entitlement. Only a webhook-confirmed 'active'
+# subscription counts as paid — 'authenticated' means checkout was authorized but
+# the charge hasn't been confirmed, so a mid-payment user is still routed to pay.
+_ENTITLED = {"active"}
 
 # Feature flag — when false, the payment gate is bypassed and every user is treated
 # as entitled. Intended for LOCAL DEVELOPMENT so developers can reach subscription-
@@ -261,6 +263,16 @@ class BillingService:
         subscription.current_end = _epoch_to_dt(entity.get("current_end")) or subscription.current_end
         await db.flush()
         logger.info("Subscription %s → status=%s", rzp_sub_id, subscription.status)
+
+        # Upgrade user role to "member" when subscription becomes entitled
+        if subscription.status in _ENTITLED and subscription.user_id:
+            user = (await db.execute(select(User).where(User.id == subscription.user_id))).scalar_one_or_none()
+            if user and (not user.has_role("admin")):
+                member_role = (await db.execute(select(Role).where(Role.name == "member"))).scalar_one_or_none()
+                if member_role and (not user.has_role("member")):
+                    user.role = member_role
+                    await db.flush()
+                    logger.info("User %s role upgraded to member (subscription %s)", user.id, rzp_sub_id)
 
     async def _record_payment(self, entity: dict, db: AsyncSession) -> None:
         rzp_payment_id = entity.get("id")

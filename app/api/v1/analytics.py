@@ -93,7 +93,7 @@ async def get_workspace_token_analytics(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workspace #{workspace_id} not found.",
         )
-    if workspace.user_id != current_user.id and current_user.role != "admin":
+    if workspace.user_id != current_user.id and not current_user.has_role("admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view analytics for this workspace.",
@@ -125,7 +125,7 @@ async def get_admin_token_analytics(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TokenAnalyticsEnvelope:
-    if current_user.role != "admin":
+    if not current_user.has_role("admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required.",

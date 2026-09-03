@@ -5,7 +5,7 @@ import pytest_asyncio
 from pathlib import Path
 from typing import AsyncGenerator
 from unittest.mock import patch
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from httpx import AsyncClient, ASGITransport
 
@@ -18,7 +18,7 @@ os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 os.environ.setdefault("OTP_EXPIRE_MINUTES", "10")
 
-from app.db.models import Base, User
+from app.db.models import Base, Role, User
 from app.core.security import hash_password_async
 from main import app
 from app.db.database import get_db
@@ -143,13 +143,32 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
             await session.execute(table.delete())
         await session.commit()
 
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_roles(db_session: AsyncSession):
+    """Ensure all three roles exist in the test database before each test."""
+    for role_name, desc in [
+        ("admin", "Full platform access; bypasses subscription checks"),
+        ("member", "Paid subscription user"),
+        ("viewer", "Starter / free-tier user"),
+    ]:
+        exists = (await db_session.execute(select(Role).where(Role.name == role_name))).scalar_one_or_none()
+        if exists is None:
+            db_session.add(Role(name=role_name, description=desc))
+    await db_session.flush()
+    yield
+
 @pytest_asyncio.fixture
 async def normal_user(db_session: AsyncSession) -> User:
+    member_role = (await db_session.execute(select(Role).where(Role.name == "member"))).scalar_one_or_none()
+    if member_role is None:
+        member_role = Role(name="member", description="Paid subscription user")
+        db_session.add(member_role)
+        await db_session.flush()
     user = User(
         username="user@axiorapulse.com",
         password=await hash_password_async("Test@12345"),
-        role="user",
-        register_mfa=True
+        register_mfa=True,
+        role=member_role,
     )
     db_session.add(user)
     await db_session.commit()
@@ -158,11 +177,16 @@ async def normal_user(db_session: AsyncSession) -> User:
 
 @pytest_asyncio.fixture
 async def admin_user(db_session: AsyncSession) -> User:
+    admin_role = (await db_session.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
+    if admin_role is None:
+        admin_role = Role(name="admin", description="Full platform access; bypasses subscription checks")
+        db_session.add(admin_role)
+        await db_session.flush()
     user = User(
         username="admin@axiorapulse.com",
         password=await hash_password_async("Test@12345"),
-        role="admin",
-        register_mfa=True
+        register_mfa=True,
+        role=admin_role,
     )
     db_session.add(user)
     await db_session.commit()

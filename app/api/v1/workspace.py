@@ -312,6 +312,23 @@ async def export_workspace_report(
     )
 
 
+# ── Certificate of Completion ────────────────────────────────────────────────
+
+@router.get(
+    "/{workspace_id}/certificate",
+    summary="Download Certificate of Completion for a validated workspace",
+    description="Generates and downloads a personalised Certificate of Completion PDF. The workspace must be in VALIDATED state.",
+)
+@limiter.limit("10/minute")
+async def download_certificate(
+    request: Request,
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await workspace_service.generate_certificate(workspace_id, current_user, db)
+
+
 # ── Update Workspace Survey Questions (User Session) ─────────────────────────
 
 @router.put(

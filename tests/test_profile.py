@@ -1,11 +1,12 @@
 import pytest
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
 from app.core.security import hash_password_async
-from app.db.models import User
+from app.db.models import Role, User
 
 
 # helpers
@@ -16,12 +17,17 @@ async def create_test_user(
     username: str,
     display_name: str | None = None,
 ) -> User:
+    member_role = (await db_session.execute(select(Role).where(Role.name == "member"))).scalar_one_or_none()
+    if member_role is None:
+        member_role = Role(name="member", description="Paid subscription user")
+        db_session.add(member_role)
+        await db_session.flush()
     user = User(
         username=username,
         password=await hash_password_async("Test@12345"),
-        role="user",
         display_name=display_name,
         register_mfa=True,
+        role=member_role,
     )
     db_session.add(user)
     await db_session.commit()
@@ -58,7 +64,7 @@ async def test_get_current_user_profile_with_display_name(
     assert data["id"] == str(user.id)
     assert data["email"] == user.username
     assert data["name"] == "Test Person"
-    assert data["role"] == "user"
+    assert data["role"] == "member"
 
 
 @pytest.mark.asyncio

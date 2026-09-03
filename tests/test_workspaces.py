@@ -7,19 +7,26 @@ from types import SimpleNamespace
 
 from app.core.dependencies import get_current_user
 from app.core.security import hash_password_async
-from app.db.models import User, Workspace
+from app.db.models import Role, User, Workspace
 
 
 async def create_test_user(
     db_session: AsyncSession,
     *,
     username: str,
+    role: str = "member",
 ) -> User:
+    role_obj = (await db_session.execute(select(Role).where(Role.name == role))).scalar_one_or_none()
+    if role_obj is None:
+        role_obj = Role(name=role, description=f"{role} role")
+        db_session.add(role_obj)
+        await db_session.flush()
+
     user = User(
         username=username,
         password=await hash_password_async("Test@12345"),
-        role="user",
         register_mfa=True,
+        role=role_obj,
     )
     db_session.add(user)
     await db_session.commit()
@@ -50,7 +57,12 @@ async def create_workspace(
 
 
 def authenticate_as(user: User) -> None:
-    current_user = SimpleNamespace(id=user.id, username=user.username, role=user.role)
+    role_name = user._primary_role
+
+    def _has_role(name: str) -> bool:
+        return role_name == name
+
+    current_user = SimpleNamespace(id=user.id, username=user.username, role=role_name, has_role=_has_role)
 
     async def _mock_current_user():
         return current_user

@@ -13,6 +13,7 @@ Supported file types:
   - doc     → docs/    (DOCX, TXT, MD, and other documents)
 """
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import HTTPException, UploadFile, status
@@ -214,18 +215,40 @@ class WorkspaceAttachmentService:
             content_type=content_type,
         )
 
-        # Persist record
-        attachment = WorkspaceAttachment(
-            user_id=current_user.id,
-            workspace_id=workspace.id,
-            file_name=filename,
-            file_type=file_type,
-            mime_type=content_type,
-            s3_key=s3_key,
-            file_url=file_url,
-            file_size_bytes=file_size,
+        # Check if an attachment with the same filename already exists for this workspace and user
+        existing_res = await db.execute(
+            select(WorkspaceAttachment).where(
+                WorkspaceAttachment.workspace_id == workspace.id,
+                WorkspaceAttachment.user_id == current_user.id,
+                WorkspaceAttachment.file_name == filename,
+            )
         )
-        db.add(attachment)
+        existing_attachment = existing_res.scalars().first()
+
+        if existing_attachment:
+            if existing_attachment.s3_key and existing_attachment.s3_key != s3_key:
+                s3_storage_service.delete_workspace_asset(existing_attachment.s3_key)
+            existing_attachment.file_type = file_type
+            existing_attachment.mime_type = content_type
+            existing_attachment.s3_key = s3_key
+            existing_attachment.file_url = file_url
+            existing_attachment.file_size_bytes = file_size
+            existing_attachment.updated_at = datetime.now(timezone.utc)
+            attachment = existing_attachment
+        else:
+            # Persist record
+            attachment = WorkspaceAttachment(
+                user_id=current_user.id,
+                workspace_id=workspace.id,
+                file_name=filename,
+                file_type=file_type,
+                mime_type=content_type,
+                s3_key=s3_key,
+                file_url=file_url,
+                file_size_bytes=file_size,
+            )
+            db.add(attachment)
+
         await db.flush()
         await db.refresh(attachment)
 
@@ -268,17 +291,38 @@ class WorkspaceAttachmentService:
                 content_type=mime_type or "application/octet-stream",
             )
 
-            attachment = WorkspaceAttachment(
-                user_id=user_id,
-                workspace_id=workspace_id,
-                file_name=filename,
-                file_type=file_type,
-                mime_type=mime_type or "application/octet-stream",
-                s3_key=s3_key,
-                file_url=file_url,
-                file_size_bytes=len(file_bytes),
+            existing_res = await db.execute(
+                select(WorkspaceAttachment).where(
+                    WorkspaceAttachment.workspace_id == workspace_id,
+                    WorkspaceAttachment.user_id == user_id,
+                    WorkspaceAttachment.file_name == filename,
+                )
             )
-            db.add(attachment)
+            existing_attachment = existing_res.scalars().first()
+
+            if existing_attachment:
+                if existing_attachment.s3_key and existing_attachment.s3_key != s3_key:
+                    s3_storage_service.delete_workspace_asset(existing_attachment.s3_key)
+                existing_attachment.file_type = file_type
+                existing_attachment.mime_type = mime_type or "application/octet-stream"
+                existing_attachment.s3_key = s3_key
+                existing_attachment.file_url = file_url
+                existing_attachment.file_size_bytes = len(file_bytes)
+                existing_attachment.updated_at = datetime.now(timezone.utc)
+                attachment = existing_attachment
+            else:
+                attachment = WorkspaceAttachment(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    file_name=filename,
+                    file_type=file_type,
+                    mime_type=mime_type or "application/octet-stream",
+                    s3_key=s3_key,
+                    file_url=file_url,
+                    file_size_bytes=len(file_bytes),
+                )
+                db.add(attachment)
+
             await db.flush()
             await db.refresh(attachment)
 
@@ -321,13 +365,21 @@ class WorkspaceAttachmentService:
         result = await db.execute(query)
         attachments = result.scalars().all()
 
+        # Deduplicate by file_name (preserving most recent) to avoid duplicate entries
+        seen_names = set()
+        unique_attachments = []
+        for a in attachments:
+            if a.file_name not in seen_names:
+                seen_names.add(a.file_name)
+                unique_attachments.append(a)
+
         logger.info(
             "[WorkspaceAttachmentService] Listed %s attachments (workspace %s, user %s)",
-            len(attachments), workspace_id, current_user.id,
+            len(unique_attachments), workspace_id, current_user.id,
         )
         return WorkspaceAttachmentListResponse(
-            total=len(attachments),
-            attachments=[self._format_attachment_response(a) for a in attachments],
+            total=len(unique_attachments),
+            attachments=[self._format_attachment_response(a) for a in unique_attachments],
         )
 
     # ── Get Single ────────────────────────────────────────────────────────────
@@ -359,11 +411,21 @@ class WorkspaceAttachmentService:
             workspace_id, attachment_id, current_user, db
         )
 
+        # Also find any legacy duplicate rows with the same file_name and workspace_id to clean them up
+        dup_query = select(WorkspaceAttachment).where(
+            WorkspaceAttachment.workspace_id == workspace_id,
+            WorkspaceAttachment.user_id == current_user.id,
+            WorkspaceAttachment.file_name == attachment.file_name,
+        )
+        dup_result = await db.execute(dup_query)
+        all_matches = dup_result.scalars().all()
+
         # Remove from S3 (best-effort — don't block if S3 delete fails)
         s3_storage_service.delete_workspace_asset(attachment.s3_key)
 
-        # Remove DB record
-        await db.delete(attachment)
+        # Remove DB record (and any duplicate rows)
+        for att in all_matches:
+            await db.delete(att)
         await db.flush()
 
         logger.info(

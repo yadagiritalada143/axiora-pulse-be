@@ -11,7 +11,8 @@ FastAPI event loop non-blocking.
 
 Configuration (from .env):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
-  SMTP_FROM_EMAIL, SMTP_FROM_NAME, OTP_EXPIRE_MINUTES
+  SMTP_FROM_EMAIL, SMTP_FROM_NAME, OTP_EXPIRE_MINUTES,
+  SUPPORT_EMAIL, CONTACT_EMAIL (contact-form recipient)
 """
 import asyncio
 import html
@@ -41,6 +42,7 @@ _SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL") or _SMTP_USER
 _SMTP_FROM_NAME  = os.getenv("SMTP_FROM_NAME", "Axiora Pulse")
 _OTP_EXPIRE_MINS = int(os.getenv("OTP_EXPIRE_MINUTES", "10"))
 _SUPPORT_EMAIL   = os.getenv("SUPPORT_EMAIL", "no.reply@axiorapulse.com")
+_CONTACT_RECIPIENT_EMAIL = os.getenv("CONTACT_EMAIL") or _SUPPORT_EMAIL
 _DASHBOARD_LOGIN_URL = os.getenv("DASHBOARD_LOGIN_URL", "https://qa.axiorapulse.com/login")
 
 
@@ -168,6 +170,92 @@ def _smtp_send(to_email: str, msg: MIMEMultipart) -> None:
             server.login(_SMTP_USER, _SMTP_PASSWORD)
             server.sendmail(_SMTP_FROM_EMAIL, [to_email], msg.as_string())
     logger.info("OTP email dispatched via SMTP (%s:%s) → %s", _SMTP_HOST, _SMTP_PORT, to_email)
+
+
+def _build_contact_email(name: str, email: str, topic: str, message: str) -> MIMEMultipart:
+    """Construct the 'contact us' email forwarded to the support inbox."""
+    safe_name = html.escape(name)
+    safe_email = html.escape(email, quote=True)
+    safe_topic = html.escape(topic)
+    safe_message = html.escape(message)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"New Contact Request: {topic}"
+    msg["From"] = f"{_SMTP_FROM_NAME} <{_SMTP_FROM_EMAIL}>"
+    msg["To"] = _CONTACT_RECIPIENT_EMAIL
+    msg["Reply-To"] = email
+
+    plain_body = (
+        f"A new contact request was submitted from the website.\n\n"
+        f"Name: {name}\n"
+        f"Email: {email}\n"
+        f"Topic: {topic}\n\n"
+        f"Message:\n{message}\n"
+    )
+
+    body_html = f"""\
+        <tr>
+          <td align="center" style="padding-bottom:8px;">
+            <h1 class="text-primary" style="margin:0;font-size:22px;font-weight:700;color:#1a1a2e;letter-spacing:-0.5px;">
+              New Contact Request
+            </h1>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top:8px;padding-bottom:20px;">
+            <p class="text-secondary" style="margin:0;color:#555;font-size:15px;line-height:1.6;">
+              A visitor submitted the following details from the website.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding-bottom:24px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+                   style="border:1px solid #eeeeee;border-radius:12px;overflow:hidden;">
+              <tr>
+                <td style="padding:14px 20px;background:#f9fafb;width:120px;">
+                  <span class="text-secondary" style="color:#555;font-size:13px;font-weight:700;">Name</span>
+                </td>
+                <td style="padding:14px 20px;"><span style="color:#1a1a2e;font-size:14px;">{safe_name}</span></td>
+              </tr>
+              <tr>
+                <td style="padding:14px 20px;background:#f9fafb;">
+                  <span class="text-secondary" style="color:#555;font-size:13px;font-weight:700;">Email</span>
+                </td>
+                <td style="padding:14px 20px;">
+                  <a href="mailto:{safe_email}" style="color:#4f46e5;font-size:14px;">{safe_email}</a>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:14px 20px;background:#f9fafb;">
+                  <span class="text-secondary" style="color:#555;font-size:13px;font-weight:700;">Topic</span>
+                </td>
+                <td style="padding:14px 20px;"><span style="color:#1a1a2e;font-size:14px;">{safe_topic}</span></td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-bottom:12px;">
+            <h2 style="margin:0;font-size:15px;font-weight:700;color:#1a1a2e;">Message</h2>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding-bottom:28px;">
+            <div style="background:#f9fafb;border:1px solid #eeeeee;border-radius:12px;padding:16px 20px;">
+              <p style="margin:0;color:#1a1a2e;font-size:14px;line-height:1.6;white-space:pre-wrap;">{safe_message}</p>
+            </div>
+          </td>
+        </tr>"""
+
+    html_body = render_email_shell(
+        preheader=f"New contact request: {topic}",
+        body_html=body_html,
+    )
+
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    return msg
 
 
 # ── Public async interface ─────────────────────────────────────────────────────
@@ -557,6 +645,32 @@ async def send_password_reset_success_email(to_email: str, changed_at: Optional[
     except Exception as exc:
         error = f"Unexpected error: {exc}"
         logger.error("Password reset success email unexpected error for %s: %s", to_email, exc)
+        return OTPResult(success=False, channel="email", error=error)
+
+
+# Website "Get in Touch" contact-form email
+
+async def send_contact_email(name: str, email: str, topic: str, message: str) -> OTPResult:
+    """Forward a website contact-form submission to the support inbox (async, non-blocking).
+
+    Best-effort — never raises. Returns OTPResult with success=False + error
+    string on delivery failure so callers/background jobs can log or retry.
+    """
+    msg = _build_contact_email(name, email, topic, message)
+    try:
+        await asyncio.to_thread(_smtp_send, _CONTACT_RECIPIENT_EMAIL, msg)
+        return OTPResult(success=True, channel="email")
+    except smtplib.SMTPAuthenticationError as exc:
+        error = "SMTP authentication failed — check SMTP_USER / SMTP_PASSWORD in .env"
+        logger.error("Contact email auth error: %s", exc)
+        return OTPResult(success=False, channel="email", error=error)
+    except smtplib.SMTPException as exc:
+        error = f"SMTP error: {exc}"
+        logger.error("Contact email SMTP error: %s", exc)
+        return OTPResult(success=False, channel="email", error=error)
+    except Exception as exc:
+        error = f"Unexpected error: {exc}"
+        logger.error("Contact email unexpected error: %s", exc)
         return OTPResult(success=False, channel="email", error=error)
 
 

@@ -3,8 +3,9 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
 from app.core.security import hash_password_async
-from app.db.models import InteractiveQuestionnaire, User, UserInteractiveQuestionnaire
+from app.db.models import InteractiveQuestionnaire, Role, User, UserInteractiveQuestionnaire
 
 
 async def table_info(db_session: AsyncSession, table_name: str) -> dict:
@@ -77,8 +78,8 @@ async def test_user_unique_username_constraint_raises_integrity_error(db_transac
     hashed_password = await hash_password_async("Test@12345")
     db_transaction_session.add_all(
         [
-            User(username="unique@axiorapulse.com", password=hashed_password, role="user"),
-            User(username="unique@axiorapulse.com", password=hashed_password, role="user"),
+            User(username="unique@axiorapulse.com", password=hashed_password),
+            User(username="unique@axiorapulse.com", password=hashed_password),
         ]
     )
 
@@ -141,7 +142,6 @@ async def test_user_interactive_questionnaire_accepts_valid_foreign_keys(
     user = User(
         username="fk-valid@axiorapulse.com",
         password=await hash_password_async("Test@12345"),
-        role="user",
         register_mfa=True,
     )
     questionnaire = InteractiveQuestionnaire(

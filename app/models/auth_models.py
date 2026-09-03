@@ -113,7 +113,7 @@ class AuthActionsData(BaseModel):
     payment              – True  when the user has completed payment (default: True)
     interactive_questions – True  when the user has answered onboarding questions (default: True)
     """
-    payment: bool = True
+    payment: bool = False
     interactive_questions: bool = True
 
 
@@ -383,7 +383,6 @@ class UpdateCurrentUserRequest(BaseModel):
 
 class CurrentUserEnvelope(BaseModel):
     data: CurrentUserResponse
-
 
 
 

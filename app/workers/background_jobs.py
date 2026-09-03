@@ -27,15 +27,12 @@ logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = (2, 5)  # delay before attempt 2, delay before attempt 3
 
-# asyncio only holds a weak reference to a task created via create_task(), so
-# a strong reference must be kept somewhere or the task can be garbage
-# collected mid-flight. This set is that reference; entries are removed by
-# _on_task_done() once the task finishes.
 _inflight_tasks: set = set()
 
 _EMAIL_HANDLERS: Dict[str, Callable[..., Awaitable[Any]]] = {
     "registration_success": email_service.send_registration_success_email,
     "password_reset_success": email_service.send_password_reset_success_email,
+    "contact_support": email_service.send_contact_email,
 }
 
 
