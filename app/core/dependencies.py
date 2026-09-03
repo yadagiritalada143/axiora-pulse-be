@@ -117,7 +117,7 @@ async def get_current_user(
 
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Return the current user only when they have administrator privileges."""
-    if current_user.role != "admin":
+    if not current_user.has_role("admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges are required.",
@@ -140,7 +140,7 @@ async def require_active_subscription(
         async def run(user: User = Depends(require_active_subscription)):
             ...
     """
-    if current_user.role == "admin":
+    if current_user.has_role("admin"):
         return current_user
 
     # Imported here to avoid a circular import (services import from db/models,

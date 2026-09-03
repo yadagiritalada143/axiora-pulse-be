@@ -15,6 +15,8 @@ class AdminUserResponse(BaseModel):
     role: str
     created_at: datetime
     workspace_count: int
+    active_workspace_count: int
+    archived_workspace_count: int
 
 
 class AdminUserPagination(BaseModel):
@@ -136,6 +138,8 @@ class AdminSurveyResponseDetailResponse(AdminSurveyResponseItem):
     survey_link: Optional[str] = None
 
 
+
+
 class UserGrowthPoint(BaseModel):
     """Number of users that registered within a single period."""
 
@@ -148,3 +152,72 @@ class UserGrowthResponse(BaseModel):
 
     granularity: str  # "month" | "year"
     series: list[UserGrowthPoint]
+
+
+class AdminDashboardGrowth(BaseModel):
+    """Percentage change for each headline metric vs the previous 7 days."""
+
+    total_users: float
+    paid_users: float
+    non_paid_users: float
+    active_subscriptions: float
+    total_workspaces: float
+    active_workspaces: float
+    archived_workspaces: float
+
+
+class AdminDashboardStatsResponse(BaseModel):
+    """Headline counts plus week-over-week growth for the admin dashboard."""
+
+    total_users: int
+    paid_users: int
+    non_paid_users: int
+    active_subscriptions: int
+    total_workspaces: int
+    active_workspaces: int
+    archived_workspaces: int
+    growth: AdminDashboardGrowth
+
+
+class UserGrowthDataPoint(BaseModel):
+    """Registration count within a single date/period bucket."""
+
+    period: str  # "YYYY-MM-DD" for day buckets, "YYYY-MM" for month buckets
+    count: int
+
+
+class UserGrowthAnalyticsResponse(BaseModel):
+    """User registrations bucketed by the requested period filter."""
+
+    period: str  # week | month | last_7_days | last_30_days | year
+    series: list[UserGrowthDataPoint]
+
+
+class UsersByPlanItem(BaseModel):
+    """User count and share for a single subscription plan."""
+
+    plan: str  # plan code (e.g. free, pro, enterprise)
+    user_count: int
+    percentage: float
+
+
+class UsersByPlanResponse(BaseModel):
+    """Distribution of users across subscription plans."""
+
+    total_users: int
+    plans: list[UsersByPlanItem]
+
+
+class RevenueDataPoint(BaseModel):
+    """Successful payment revenue within a single bucket."""
+
+    period: str  # "YYYY-MM-DD HH:00" hourly | "YYYY-MM-DD" daily | "YYYY-MM" monthly
+    amount: float  # in INR (major units)
+
+
+class RevenueResponse(BaseModel):
+    """Revenue aggregated over a period, with a bucketed time series."""
+
+    period: str  # today | week | month | year
+    total_amount: float  # sum of successful payments within the period, in INR
+    series: list[RevenueDataPoint]

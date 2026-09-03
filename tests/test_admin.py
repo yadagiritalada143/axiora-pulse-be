@@ -6,9 +6,10 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from types import SimpleNamespace
 
+from sqlalchemy import select
 from app.core.dependencies import get_current_user
 from app.core.security import hash_password_async
-from app.db.models import PublicSurveyResponse, Survey, User, Workspace
+from app.db.models import PublicSurveyResponse, Role, Survey, User, Workspace
 
 
 # helpers
@@ -17,16 +18,22 @@ async def create_test_user(
     db_session: AsyncSession,
     *,
     username: str,
-    role: str = "user",
+    role: str = "member",
     display_name: str | None = None,
     created_at: datetime | None = None,
 ) -> User:
+    role_obj = (await db_session.execute(select(Role).where(Role.name == role))).scalar_one_or_none()
+    if role_obj is None:
+        role_obj = Role(name=role, description=f"{role} role")
+        db_session.add(role_obj)
+        await db_session.flush()
+
     user = User(
         username=username,
         password=await hash_password_async("Test@12345"),
-        role=role,
         display_name=display_name,
         register_mfa=True,
+        role=role_obj,
     )
     if created_at is not None:
         user.created_at = created_at
@@ -98,7 +105,12 @@ async def create_survey_response(
 
 
 def authenticate_as(user: User) -> None:
-    current_user = SimpleNamespace(id=user.id, username=user.username, role=user.role)
+    role_name = user._primary_role
+
+    def _has_role(name: str) -> bool:
+        return role_name == name
+
+    current_user = SimpleNamespace(id=user.id, username=user.username, role=role_name, has_role=_has_role)
 
     async def _mock_current_user():
         return current_user
@@ -157,7 +169,7 @@ async def test_list_users_pagination_limit_and_offset(
     assert len(data["users"]) == 2
     assert data["pagination"]["limit"] == 2
     assert data["pagination"]["offset"] == 0
-    assert data["pagination"]["total"] == 6  # 5 seeded + the admin itself
+    assert data["pagination"]["total"] == 5  # 5 seeded (admin excluded from list)
 
 
 @pytest.mark.asyncio

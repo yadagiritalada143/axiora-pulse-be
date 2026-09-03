@@ -43,7 +43,7 @@ load_dotenv()
 
 _ACCESS_TOKEN_MINS = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 from app.core.google_auth import GoogleTokenError, verify_google_id_token
-from app.db.models import AuthActions, RefreshSession, User, UserDetails
+from app.db.models import AuthActions, RefreshSession, Role, User, UserDetails
 from app.models.auth_models import (
     AdminLoginResponse,
     AuthActionsData,
@@ -86,9 +86,15 @@ async def seed_admin_user(db: AsyncSession) -> None:
 
     hashed_pw = await hash_password_async("Test@12345")
 
+    admin_role = await _get_role(db, "admin")
+    if admin_role is None:
+        admin_role = Role(name="admin", description="Full platform access; bypasses subscription checks")
+        db.add(admin_role)
+        await db.flush()
+
     if admin_user is None:
         admin_user = User(
-            role="admin",
+            role=admin_role,
             username=admin_email,
             password=hashed_pw,
             register_mfa=True,
@@ -97,7 +103,8 @@ async def seed_admin_user(db: AsyncSession) -> None:
         await db.commit()
         logger.info("Created default admin user: %s", admin_email)
     else:
-        admin_user.role = "admin"
+        if not admin_user.has_role("admin"):
+            admin_user.role = admin_role
         admin_user.password = hashed_pw
         admin_user.register_mfa = True
         await db.commit()
@@ -124,6 +131,12 @@ async def _get_user_by_id(db: AsyncSession, user_id: int) -> User:
 async def _get_user_by_username(db: AsyncSession, username: str) -> User | None:
     """Fetch a user by username (email). Returns None if not found."""
     result = await db.execute(select(User).where(User.username == username.lower().strip()))
+    return result.scalar_one_or_none()
+
+
+async def _get_role(db: AsyncSession, role_name: str) -> Role | None:
+    """Fetch a Role row by name (viewer | member | admin). Returns None if absent."""
+    result = await db.execute(select(Role).where(Role.name == role_name))
     return result.scalar_one_or_none()
 
 
@@ -173,7 +186,7 @@ def _to_register_response(user: User) -> RegisterResponse:
 async def _issue_token_pair(user: User, db: AsyncSession) -> tuple[str, str]:
     """Create an access token and a rotating, server-revocable refresh session."""
     session_id = str(uuid4())
-    token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
+    token_data = {"sub": str(user.id), "username": user.username, "role": user._primary_role}
     access_token = create_access_token(data=token_data)
     refresh_token = create_refresh_token(data={**token_data, "sid": session_id})
     db.add(RefreshSession(id=session_id, user_id=user.id, expires_at=datetime.now(tz=timezone.utc) + timedelta(days=7)))
@@ -196,6 +209,21 @@ async def _get_or_create_auth_actions(user_id: int, db: AsyncSession) -> AuthAct
         await db.flush()
         logger.info("Created auth_actions row for user_id=%s with defaults.", user_id)
     return row
+
+
+async def _has_active_payment(user: User, db: AsyncSession) -> bool:
+    """Live payment-gate state for the auth response's `payment` flag.
+
+    Reads the single billing chokepoint (`has_active_entitlement`), which checks
+    for an entitled Subscription — or returns True for everyone when
+    SUBSCRIPTION_ENFORCED is disabled. This replaces the static, always-True
+    `auth_actions.payment` column so the frontend's `hasActivePlan` reflects the
+    user's real subscription: paid users land on the dashboard, unpaid users are
+    routed to pricing. Imported lazily to avoid an import-time service cycle.
+    """
+    from app.services.billing_service import billing_service
+
+    return await billing_service.has_active_entitlement(user, db)
 
 
 # ── Auth Service ───────────────────────────────────────────────────────────────
@@ -261,8 +289,10 @@ class AuthService:
         otp = generate_otp()
         expiry = otp_expiry()
 
+        # Default role for new sign-ups is "viewer" (upgraded to "member" on payment)
+        default_role = await _get_role(db, "viewer")
         user = User(
-            role="user",
+            role=default_role,
             username=username,
             password=await hash_password_async(request.password),
             register_otp=otp,
@@ -371,7 +401,7 @@ class AuthService:
             logger.info("Login OTP verified via verify_otp for user id=%s (%s)", user.id, user.username)
 
             auth_actions_row = await _get_or_create_auth_actions(user.id, db)
-            actions = ["dashboard"] if user.role == "admin" else []
+            actions = ["dashboard"] if user.has_role("admin") else []
             return VerifyOTPResponse(
                 status="success",
                 message="Login OTP Validated Successfully !",
@@ -379,10 +409,10 @@ class AuthService:
                 refresh_token=refresh_token,
                 token_type="bearer",
                 expires_in_minutes=_ACCESS_TOKEN_MINS,
-                role=user.role,
+                role=user._primary_role,
                 actions=actions,
                 auth_actions=AuthActionsData(
-                    payment=auth_actions_row.payment,
+                    payment=await _has_active_payment(user, db),
                     interactive_questions=auth_actions_row.interactive_questions,
                 ),
             )
@@ -435,7 +465,7 @@ class AuthService:
             )
 
             auth_actions_row = await _get_or_create_auth_actions(user.id, db)
-            actions = ["dashboard"] if user.role == "admin" else []
+            actions = ["dashboard"] if user.has_role("admin") else []
             return VerifyOTPResponse(
                 status="success",
                 message="OTP Validated Successfully !",
@@ -443,7 +473,7 @@ class AuthService:
                 refresh_token=refresh_token,
                 token_type="bearer",
                 expires_in_minutes=_ACCESS_TOKEN_MINS,
-                role=user.role,
+                role=user._primary_role,
                 actions=actions,
                 auth_actions=RegisterAuthActionsData(
                     interactive_questions=auth_actions_row.interactive_questions,
@@ -554,6 +584,15 @@ class AuthService:
                 detail="Account not verified. Please complete OTP verification.",
             )
 
+        # Role-based login: the standard /login endpoint is for regular users
+        # (viewer/member only). Admin accounts must use the admin login endpoint.
+        if user.has_role("admin"):
+            logger.warning("Admin user attempted regular login: %s", username)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin accounts must use the admin login endpoint.",
+            )
+
         access_token, refresh_token = await _issue_token_pair(user, db)
 
         from app.services.user_details_service import user_details_service
@@ -562,7 +601,7 @@ class AuthService:
         logger.info("Login successful for user id=%s (%s). Tokens issued.", user.id, user.username)
 
         auth_actions_row = await _get_or_create_auth_actions(user.id, db)
-        actions = ["dashboard"] if user.role == "admin" else []
+        actions = ["dashboard"] if user.has_role("admin") else []
         return LoginSuccessResponse(
             status="success",
             message="Login successful.",
@@ -570,10 +609,10 @@ class AuthService:
             refresh_token=refresh_token,
             token_type="bearer",
             expires_in_minutes=_ACCESS_TOKEN_MINS,
-            role=user.role,
+            role=user._primary_role,
             actions=actions,
             auth_actions=AuthActionsData(
-                payment=auth_actions_row.payment,
+                payment=await _has_active_payment(user, db),
                 interactive_questions=auth_actions_row.interactive_questions,
             ),
         )
@@ -649,10 +688,10 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in_minutes=_ACCESS_TOKEN_MINS,
-            role=user.role,
+            role=user._primary_role,
             actions=actions,
             auth_actions=AuthActionsData(
-                payment=auth_actions_row.payment,
+                payment=await _has_active_payment(user, db),
                 interactive_questions=auth_actions_row.interactive_questions,
             ),
         )
@@ -706,8 +745,9 @@ class AuthService:
         # 3. Brand-new user — provision a Google-backed account.
         if user is None:
             display_name = (claims.get("name") or "").strip() or None
+            default_role = await _get_role(db, "viewer")
             user = User(
-                role="user",
+                role=default_role,
                 username=email,
                 display_name=display_name,
                 password=None,
@@ -734,10 +774,10 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in_minutes=_ACCESS_TOKEN_MINS,
-            role=user.role,
+            role=user._primary_role,
             actions=[],
             auth_actions=AuthActionsData(
-                payment=auth_actions_row.payment,
+                payment=await _has_active_payment(user, db),
                 interactive_questions=auth_actions_row.interactive_questions,
             ),
             is_new_user=is_new_user,
@@ -797,7 +837,7 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        if user.role != "admin":
+        if not user.has_role("admin"):
             logger.warning("Non-admin user attempted admin login: %s", username)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -994,7 +1034,7 @@ class AuthService:
             changed_at=user.password_changed_at,
         )
 
-        actions = ["dashboard"] if user.role == "admin" else []
+        actions = ["dashboard"] if user.has_role("admin") else []
         return ForgotPasswordResetResponse(
             status="success",
             message="Password has been reset successfully.",
@@ -1002,7 +1042,7 @@ class AuthService:
             refresh_token=refresh_token,
             token_type="bearer",
             expires_in_minutes=_ACCESS_TOKEN_MINS,
-            role=user.role,
+            role=user._primary_role,
             actions=actions,
         )
 

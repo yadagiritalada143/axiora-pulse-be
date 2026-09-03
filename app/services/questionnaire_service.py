@@ -198,7 +198,7 @@ class QuestionnaireService:
         db: AsyncSession,
     ) -> InteractiveQuestionnaireResponse:
         """Persist a new interactive questionnaire question for admins."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin privileges required.",
@@ -233,7 +233,7 @@ class QuestionnaireService:
         db: AsyncSession,
     ) -> InteractiveQuestionnaireResponse:
         """Update an existing interactive questionnaire question for admins."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin privileges required.",
@@ -273,7 +273,7 @@ class QuestionnaireService:
         db: AsyncSession,
     ) -> DeleteQuestionResponse:
         """Delete an interactive questionnaire question for admins."""
-        if current_user.role != "admin":
+        if not current_user.has_role("admin"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin privileges required.",

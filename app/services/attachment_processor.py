@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.db.models import WorkspaceAttachment
 from app.models.workspace_models import AttachmentInput
@@ -62,13 +63,106 @@ class AttachmentProcessor:
             len(attachments), workspace_id, user_id,
         )
 
+        # Pre-fetch existing workspace attachments to avoid duplicate uploads & records
+        existing_attachments_map: Dict[str, WorkspaceAttachment] = {}
+        if db and user_id:
+            try:
+                stmt = select(WorkspaceAttachment).where(
+                    WorkspaceAttachment.workspace_id == int(workspace_id),
+                    WorkspaceAttachment.user_id == int(user_id),
+                )
+                res = await db.execute(stmt)
+                for att in res.scalars().all():
+                    if att.file_name:
+                        existing_attachments_map[att.file_name.lower()] = att
+                    if att.s3_key:
+                        existing_attachments_map[att.s3_key] = att
+                    if att.file_url:
+                        existing_attachments_map[att.file_url] = att
+            except Exception as e:
+                logger.warning("[AttachmentProcessor] Could not fetch existing workspace attachments: %s", e)
+
         for idx, item in enumerate(attachments, start=1):
             att_type = (item.type or "").lower().strip()
             name = item.name or f"Attachment_{idx}"
             raw_data = item.url_or_data or ""
 
             try:
-                if att_type == "pdf":
+                # Check if this attachment was already uploaded to the workspace
+                matched_att = (
+                    existing_attachments_map.get(name.lower())
+                    or existing_attachments_map.get(raw_data)
+                    or (existing_attachments_map.get(f"{name.lower()}.pdf") if att_type == "pdf" else None)
+                )
+
+                if matched_att:
+                    # Reuse existing attachment without creating a duplicate record or S3 upload
+                    file_url = matched_att.file_url
+                    s3_key = matched_att.s3_key
+                    resolved_type = matched_att.file_type or att_type
+
+                    if raw_data and not raw_data.startswith("http://") and not raw_data.startswith("https://") and not raw_data.startswith("/"):
+                        file_bytes = self._decode_bytes(raw_data)
+                    else:
+                        file_bytes = s3_storage_service.get_file_bytes(s3_key) or b""
+
+                    if resolved_type == "pdf":
+                        extracted_text = self._extract_pdf_text_from_bytes(file_bytes, matched_att.file_name)
+                        res = ProcessedAttachment(
+                            type="pdf",
+                            name=matched_att.file_name,
+                            url=file_url,
+                            s3_key=s3_key,
+                            extracted_text=extracted_text,
+                        )
+                        processed_items.append(res)
+                        if res.extracted_text:
+                            text_context_blocks.append(
+                                f"--- ATTACHED PDF DOCUMENT: {res.name} (URL: {res.url or 'N/A'}) ---\n"
+                                f"{res.extracted_text}\n"
+                                f"--- END ATTACHED PDF DOCUMENT ---"
+                            )
+                    elif resolved_type == "doc":
+                        extracted_text = self._extract_doc_text_from_bytes(
+                            file_bytes, matched_att.file_name, item.mime_type or matched_att.mime_type
+                        )
+                        res = ProcessedAttachment(
+                            type="doc",
+                            name=matched_att.file_name,
+                            url=file_url,
+                            s3_key=s3_key,
+                            extracted_text=extracted_text,
+                        )
+                        processed_items.append(res)
+                        if res.extracted_text:
+                            text_context_blocks.append(
+                                f"--- ATTACHED DOCUMENT: {res.name} (URL: {res.url or 'N/A'}) ---\n"
+                                f"{res.extracted_text}\n"
+                                f"--- END ATTACHED DOCUMENT ---"
+                            )
+                    elif resolved_type == "image":
+                        image_uri = self._get_image_data_uri_from_bytes(
+                            file_bytes, matched_att.file_name, item.mime_type or matched_att.mime_type, raw_data
+                        )
+                        res = ProcessedAttachment(
+                            type="image",
+                            name=matched_att.file_name,
+                            url=file_url,
+                            s3_key=s3_key,
+                            image_data_uri=image_uri,
+                        )
+                        processed_items.append(res)
+                        if res.image_data_uri:
+                            image_data_uris.append(res.image_data_uri)
+                        text_context_blocks.append(
+                            f"--- ATTACHED IMAGE: {res.name} (URL: {res.url or 'N/A'}) ---"
+                        )
+                    else:
+                        processed_items.append(
+                            ProcessedAttachment(type=resolved_type, name=matched_att.file_name, url=file_url, s3_key=s3_key)
+                        )
+
+                elif att_type == "pdf":
                     res = self._process_pdf(raw_data, name, workspace_id, user_id=user_id)
                     processed_items.append(res)
                     if res.extracted_text:
@@ -125,28 +219,105 @@ class AttachmentProcessor:
             try:
                 for res in processed_items:
                     if res.type in ("pdf", "doc", "image") and res.url and res.s3_key and not res.error:
-                        file_mime = "application/pdf" if res.type == "pdf" else (
-                            "image/jpeg" if res.name.lower().endswith((".jpg", ".jpeg")) else (
-                                "image/png" if res.type == "image" else "application/octet-stream"
+                        existing_stmt = select(WorkspaceAttachment).where(
+                            WorkspaceAttachment.workspace_id == int(workspace_id),
+                            WorkspaceAttachment.user_id == int(user_id),
+                            (WorkspaceAttachment.file_name == res.name) | (WorkspaceAttachment.s3_key == res.s3_key),
+                        )
+                        existing_record = (await db.execute(existing_stmt)).scalars().first()
+                        if existing_record:
+                            # Update existing record if s3_key or url changed
+                            if res.s3_key and existing_record.s3_key != res.s3_key:
+                                existing_record.s3_key = res.s3_key
+                                existing_record.file_url = res.url
+                        else:
+                            file_mime = "application/pdf" if res.type == "pdf" else (
+                                "image/jpeg" if res.name.lower().endswith((".jpg", ".jpeg")) else (
+                                    "image/png" if res.type == "image" else "application/octet-stream"
+                                )
                             )
-                        )
-                        att_record = WorkspaceAttachment(
-                            user_id=int(user_id),
-                            workspace_id=int(workspace_id),
-                            file_name=res.name,
-                            file_type=res.type,
-                            mime_type=file_mime,
-                            s3_key=res.s3_key,
-                            file_url=res.url,
-                            file_size_bytes=None,
-                        )
-                        db.add(att_record)
+                            att_record = WorkspaceAttachment(
+                                user_id=int(user_id),
+                                workspace_id=int(workspace_id),
+                                file_name=res.name,
+                                file_type=res.type,
+                                mime_type=file_mime,
+                                s3_key=res.s3_key,
+                                file_url=res.url,
+                                file_size_bytes=None,
+                            )
+                            db.add(att_record)
                 await db.flush()
             except Exception as db_err:
                 logger.warning("[AttachmentProcessor] Could not sync WorkspaceAttachment DB record: %s", db_err)
 
         formatted_context = "\n\n".join(text_context_blocks)
         return processed_items, formatted_context, image_data_uris
+
+    def _extract_pdf_text_from_bytes(self, file_bytes: bytes, safe_name: str) -> str:
+        """Extract text from PDF bytes using pdfplumber."""
+        extracted_pages = []
+        if file_bytes:
+            try:
+                import pdfplumber
+
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                    for p_num, page in enumerate(pdf.pages, start=1):
+                        page_text = page.extract_text() or ""
+                        if page_text.strip():
+                            extracted_pages.append(f"[Page {p_num}]\n{page_text.strip()}")
+            except Exception as e:
+                logger.warning("[AttachmentProcessor] pdfplumber extraction failed for %s: %s. Falling back to simple reader.", safe_name, e)
+                extracted_pages.append("(Could not extract structured text from PDF file)")
+
+        full_text = "\n\n".join(extracted_pages) if extracted_pages else "(PDF was empty or contained only non-extractable raster images)"
+        if len(full_text) > 8000:
+            full_text = full_text[:8000] + "\n... [Truncated due to length limit]"
+        return full_text
+
+    def _extract_doc_text_from_bytes(self, file_bytes: bytes, name: str, mime_type: Optional[str] = None) -> str:
+        """Extract text from .docx (using python-docx) or text/markdown bytes."""
+        extracted_text = ""
+        is_docx = name.endswith(".docx") or (mime_type and "wordprocessingml" in mime_type)
+
+        if is_docx and file_bytes:
+            try:
+                import docx
+
+                doc = docx.Document(io.BytesIO(file_bytes))
+                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+                extracted_text = "\n".join(paragraphs)
+            except Exception as e:
+                logger.warning("[AttachmentProcessor] docx extraction failed for %s: %s", name, e)
+                extracted_text = "(Failed to parse DOCX structure)"
+        elif file_bytes:
+            try:
+                extracted_text = file_bytes.decode("utf-8", errors="ignore")
+            except Exception as e:
+                extracted_text = f"(Failed to decode text document: {e})"
+
+        if len(extracted_text) > 8000:
+            extracted_text = extracted_text[:8000] + "\n... [Truncated due to length limit]"
+        return extracted_text
+
+    def _get_image_data_uri_from_bytes(
+        self,
+        file_bytes: bytes,
+        name: str,
+        mime_type: Optional[str] = None,
+        raw_data: Optional[str] = None,
+    ) -> str:
+        """Prepare base64 data URI for Vision LLM from image bytes or raw data."""
+        if raw_data and raw_data.startswith("data:image/"):
+            return raw_data
+
+        detected_mime = mime_type or ("image/jpeg" if name.lower().endswith((".jpg", ".jpeg")) else "image/png")
+        if file_bytes:
+            b64 = base64.b64encode(file_bytes).decode()
+            return f"data:{detected_mime};base64,{b64}"
+        elif raw_data and not raw_data.startswith("http") and not raw_data.startswith("/"):
+            return f"data:{detected_mime};base64,{raw_data}"
+        return ""
 
     def _process_pdf(
         self,
@@ -166,26 +337,7 @@ class AttachmentProcessor:
             file_type="pdf",
             content_type="application/pdf",
         )
-
-        extracted_pages = []
-        try:
-            import pdfplumber
-
-            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                for p_num, page in enumerate(pdf.pages, start=1):
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        extracted_pages.append(f"[Page {p_num}]\n{page_text.strip()}")
-        except Exception as e:
-            logger.warning("[AttachmentProcessor] pdfplumber extraction failed for %s: %s. Falling back to simple reader.", safe_name, e)
-            # Simple fallback text extraction if pdfplumber fails
-            extracted_pages.append("(Could not extract structured text from PDF file)")
-
-        full_text = "\n\n".join(extracted_pages) if extracted_pages else "(PDF was empty or contained only non-extractable raster images)"
-        # Cap text length to prevent prompt overflow
-        if len(full_text) > 8000:
-            full_text = full_text[:8000] + "\n... [Truncated due to length limit]"
-
+        full_text = self._extract_pdf_text_from_bytes(file_bytes, safe_name)
         return ProcessedAttachment(
             type="pdf",
             name=name,
@@ -212,29 +364,7 @@ class AttachmentProcessor:
             file_type="doc",
             content_type=mime_type or "application/octet-stream",
         )
-
-        extracted_text = ""
-        is_docx = name.endswith(".docx") or (mime_type and "wordprocessingml" in mime_type)
-
-        if is_docx:
-            try:
-                import docx
-
-                doc = docx.Document(io.BytesIO(file_bytes))
-                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-                extracted_text = "\n".join(paragraphs)
-            except Exception as e:
-                logger.warning("[AttachmentProcessor] docx extraction failed for %s: %s", name, e)
-                extracted_text = "(Failed to parse DOCX structure)"
-        else:
-            try:
-                extracted_text = file_bytes.decode("utf-8", errors="ignore")
-            except Exception as e:
-                extracted_text = f"(Failed to decode text document: {e})"
-
-        if len(extracted_text) > 8000:
-            extracted_text = extracted_text[:8000] + "\n... [Truncated due to length limit]"
-
+        extracted_text = self._extract_doc_text_from_bytes(file_bytes, name, mime_type)
         return ProcessedAttachment(
             type="doc",
             name=name,
@@ -333,9 +463,21 @@ class AttachmentProcessor:
             image_data_uri=data_uri,
         )
 
-
     def _decode_bytes(self, raw_data: str) -> bytes:
         """Helper to extract raw bytes from a base64 string or plain text."""
+        if not raw_data:
+            return b""
+
+        if raw_data.startswith("http://") or raw_data.startswith("https://"):
+            try:
+                with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                    resp = client.get(raw_data)
+                    if resp.status_code == 200:
+                        return resp.content
+            except Exception as e:
+                logger.warning("[AttachmentProcessor] Failed to download file bytes from URL %s: %s", raw_data, e)
+            return raw_data.encode("utf-8")
+
         if "," in raw_data:
             _, base64_str = raw_data.split(",", 1)
         else:

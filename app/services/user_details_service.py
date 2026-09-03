@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.timezone import now_ist, to_ist
 from app.db.models import User, UserDetails
 from app.models.user_details_models import CreateUserDetailsRequest, UpdateUserDetailsRequest, UserDetailsResponse
+from app.services.s3_storage_service import s3_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,15 @@ async def _get_by_user_id(db: AsyncSession, user_id: int) -> UserDetails | None:
 
 
 class UserDetailsService:
+    @staticmethod
+    def _proxy_avatar(response: UserDetailsResponse) -> UserDetailsResponse:
+        """Replace the raw stored avatar_url with a server-proxied URL that works cross-origin."""
+        if response.avatar_url and response.user_id:
+            response.avatar_url = s3_storage_service.get_proxy_avatar_url(
+                response.user_id, response.avatar_url
+            )
+        return response
+
     async def upsert(
         self, payload: CreateUserDetailsRequest, current_user: User, db: AsyncSession
     ) -> tuple[UserDetailsResponse, bool]:
@@ -57,7 +67,7 @@ class UserDetailsService:
             await db.flush()
             await db.refresh(existing)
             logger.info("Upserted (updated) user_details profile_id=%s for user_id=%s", existing.profile_id, current_user.id)
-            return UserDetailsResponse.model_validate(existing), False
+            return self._proxy_avatar(UserDetailsResponse.model_validate(existing)), False
 
         profile_id = await _generate_unique_profile_id(db)
         registered_at = to_ist(current_user.created_at)
@@ -80,13 +90,13 @@ class UserDetailsService:
         await db.flush()
         await db.refresh(record)
         logger.info("Upserted (created) user_details profile_id=%s for user_id=%s", profile_id, current_user.id)
-        return UserDetailsResponse.model_validate(record), True
+        return self._proxy_avatar(UserDetailsResponse.model_validate(record)), True
 
     async def get_own(self, current_user: User, db: AsyncSession) -> UserDetailsResponse:
         record = await _get_by_user_id(db, current_user.id)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
-        return UserDetailsResponse.model_validate(record)
+        return self._proxy_avatar(UserDetailsResponse.model_validate(record))
 
     async def update_own(
         self, payload: UpdateUserDetailsRequest, current_user: User, db: AsyncSession
@@ -107,7 +117,7 @@ class UserDetailsService:
         await db.flush()
         await db.refresh(record)
         logger.info("Updated user_details profile_id=%s for user_id=%s", record.profile_id, current_user.id)
-        return UserDetailsResponse.model_validate(record)
+        return self._proxy_avatar(UserDetailsResponse.model_validate(record))
 
     async def set_status_by_user_id(
         self, user_id: int, profile_status: str, db: AsyncSession
@@ -125,7 +135,7 @@ class UserDetailsService:
             "Admin set profile_status=%s for profile_id=%s (user_id=%s)",
             profile_status, record.profile_id, user_id,
         )
-        return UserDetailsResponse.model_validate(record)
+        return self._proxy_avatar(UserDetailsResponse.model_validate(record))
 
     @staticmethod
     async def touch_last_login(user_id: int, db: AsyncSession) -> None:

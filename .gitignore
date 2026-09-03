@@ -156,11 +156,12 @@ __pycache__/
 *.pyc
 .venv/
 
+
 #Test coverage
 .coverage
 pytest.ini
 coverage.xml
-
+.idea/
 #uploads 
 backend/uploads
 uploads/
